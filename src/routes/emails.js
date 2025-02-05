@@ -145,9 +145,9 @@ router.post('/public/create', async (req, res) => {
 // Admin route to fetch all emails (admin-only)
 router.get('/admin/all', async (req, res) => {
   try {
-    // Check admin passphrase
+    // Check admin passphrase from environment variable
     const adminAccess = req.headers['admin-access'];
-    if (adminAccess !== 'esrattormarechudifuck') {
+    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
