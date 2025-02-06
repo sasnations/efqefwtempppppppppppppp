@@ -3,53 +3,58 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create the pool with optimized settings for Render Premium
+// Create the pool with optimized settings
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 50, // Increased for Premium tier
-  maxIdle: 20, // Keep more idle connections ready
-  idleTimeout: 60000, // Longer idle timeout
+  connectionLimit: 10, // Reduced from 50 to prevent overloading
+  maxIdle: 5, // Reduced idle connections
+  idleTimeout: 30000, // Reduced idle timeout to 30 seconds
   queueLimit: 0,
   enableKeepAlive: true,
-  keepAliveInitialDelay: 30000,
-  connectTimeout: 60000,
+  keepAliveInitialDelay: 10000, // Reduced initial delay
+  connectTimeout: 20000, // Reduced connection timeout
   ssl: process.env.NODE_ENV === 'production' ? {
     rejectUnauthorized: false
   } : undefined
 });
 
-// Add event listeners after pool creation
+// Add event listeners with better error handling
 pool.on('connection', (connection) => {
   console.log('New database connection established');
   
   connection.on('error', (err) => {
-    console.error('Database connection error:', err);
     if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-      console.error('Database connection was closed.');
+      console.error('Database connection was closed');
     }
     if (err.code === 'ER_CON_COUNT_ERROR') {
-      console.error('Database has too many connections.');
+      console.error('Database has too many connections');
     }
-    if (err.code === 'ECONNREFUSED') {
-      console.error('Database connection was refused.');
+    if (err.code === 'ECONNRESET') {
+      console.error('Connection reset by peer');
     }
   });
 });
 
-// Check database connection health
+// Improved health check with timeout
 export async function checkDatabaseConnection() {
+  const connection = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
-    await connection.query('SELECT 1');
-    connection.release();
+    await Promise.race([
+      connection.query('SELECT 1'),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Health check timeout')), 5000)
+      )
+    ]);
     return true;
   } catch (error) {
-    console.error('Database health check failed:', error);
+    console.error('Database health check failed:', error.message);
     return false;
+  } finally {
+    connection.release();
   }
 }
 
@@ -61,8 +66,13 @@ export async function initializeDatabase() {
     const connection = await pool.getConnection();
     console.log('Successfully connected to database');
     
-    // Test the connection
-    await connection.query('SELECT 1');
+    // Test the connection with timeout
+    await Promise.race([
+      connection.query('SELECT 1'),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Initial connection timeout')), 5000)
+      )
+    ]);
     
     // Create tables
     await createTables(connection);
@@ -71,8 +81,7 @@ export async function initializeDatabase() {
     console.log('Database initialized successfully');
     return pool;
   } catch (error) {
-    console.error('Error initializing database:', error);
-    console.error('Error details:', error.message);
+    console.error('Error initializing database:', error.message);
     throw error;
   }
 }
@@ -180,13 +189,13 @@ async function createTables(connection) {
   `);
 }
 
-// Add cleanup function for graceful shutdown
+// Improved cleanup function
 async function cleanup() {
   try {
     await pool.end();
     console.log('All database connections closed');
   } catch (err) {
-    console.error('Error closing database connections:', err);
+    console.error('Error closing database connections:', err.message);
   }
 }
 
