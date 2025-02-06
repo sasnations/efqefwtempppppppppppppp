@@ -3,15 +3,19 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create the pool
+// Create the pool with optimized settings for Render Premium
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: 50, // Increased for Premium tier
+  maxIdle: 20, // Keep more idle connections ready
+  idleTimeout: 60000, // Longer idle timeout
   queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 30000,
   connectTimeout: 60000,
   ssl: process.env.NODE_ENV === 'production' ? {
     rejectUnauthorized: false
@@ -19,17 +23,21 @@ const pool = mysql.createPool({
 });
 
 // Add event listeners after pool creation
-pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-  if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-    console.error('Database connection was closed.');
-  }
-  if (err.code === 'ER_CON_COUNT_ERROR') {
-    console.error('Database has too many connections.');
-  }
-  if (err.code === 'ECONNREFUSED') {
-    console.error('Database connection was refused.');
-  }
+pool.on('connection', (connection) => {
+  console.log('New database connection established');
+  
+  connection.on('error', (err) => {
+    console.error('Database connection error:', err);
+    if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+      console.error('Database connection was closed.');
+    }
+    if (err.code === 'ER_CON_COUNT_ERROR') {
+      console.error('Database has too many connections.');
+    }
+    if (err.code === 'ECONNREFUSED') {
+      console.error('Database connection was refused.');
+    }
+  });
 });
 
 // Check database connection health
@@ -171,5 +179,19 @@ async function createTables(connection) {
     );
   `);
 }
+
+// Add cleanup function for graceful shutdown
+async function cleanup() {
+  try {
+    await pool.end();
+    console.log('All database connections closed');
+  } catch (err) {
+    console.error('Error closing database connections:', err);
+  }
+}
+
+// Handle graceful shutdown
+process.on('SIGTERM', cleanup);
+process.on('SIGINT', cleanup);
 
 export { pool };
