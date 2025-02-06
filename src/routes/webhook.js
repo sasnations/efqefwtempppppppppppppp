@@ -4,7 +4,95 @@ import { pool } from '../db/init.js';
 import { simpleParser } from 'mailparser';
 import iconv from 'iconv-lite';
 
-const router = express.Router();
+// Email parsing helper functions
+function extractSenderEmail(emailFrom) {
+  // If no email provided, return empty string
+  if (!emailFrom) return '';
+
+  // Try to extract email from format "Name <email@domain.com>"
+  const angleEmailMatch = emailFrom.match(/<(.+?)>/);
+  if (angleEmailMatch) {
+    return angleEmailMatch[1];
+  }
+
+  // Try to extract email from format "email@domain.com"
+  const simpleEmailMatch = emailFrom.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/);
+  if (simpleEmailMatch) {
+    return simpleEmailMatch[1];
+  }
+
+  // Handle bounce/system emails
+  if (emailFrom.includes('bounce') || emailFrom.includes('mailer-daemon')) {
+    // Try to extract original sender from common bounce formats
+    const bounceMatch = emailFrom.match(/original-sender:\s*([^\s]+@[^\s]+)/i);
+    if (bounceMatch) {
+      return bounceMatch[1];
+    }
+    
+    // If it's a bounce but we can't find original sender, mark it clearly
+    return 'system@bounced.mail';
+  }
+
+  // Return original if no pattern matches
+  return emailFrom;
+}
+
+function extractSenderName(emailFrom) {
+  if (!emailFrom) return 'Unknown Sender';
+
+  // Try to extract name from "Name <email@domain.com>"
+  const nameMatch = emailFrom.match(/^"?([^"<]+)"?\s*</);
+  if (nameMatch) {
+    return nameMatch[1].trim();
+  }
+
+  // For bounce messages, return clear system name
+  if (emailFrom.includes('bounce') || emailFrom.includes('mailer-daemon')) {
+    return 'System Notification';
+  }
+
+  // If no name found, use email local part
+  const email = extractSenderEmail(emailFrom);
+  return email.split('@')[0] || 'Unknown Sender';
+}
+
+function cleanSubject(subject) {
+  if (!subject) return 'No Subject';
+
+  // Remove common prefixes
+  const prefixesToRemove = [
+    /^re:\s*/i,
+    /^fwd:\s*/i,
+    /^fw:\s*/i,
+    /^\[SPAM\]\s*/i,
+    /^bounce:/i,
+    /^auto.*reply:\s*/i,
+    /^automatic\s+reply:\s*/i
+  ];
+
+  let cleanedSubject = subject;
+  prefixesToRemove.forEach(prefix => {
+    cleanedSubject = cleanedSubject.replace(prefix, '');
+  });
+
+  // Decode HTML entities
+  cleanedSubject = cleanedSubject
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+
+  // Remove excess whitespace
+  cleanedSubject = cleanedSubject.replace(/\s+/g, ' ').trim();
+
+  // Limit length
+  if (cleanedSubject.length > 100) {
+    cleanedSubject = cleanedSubject.substring(0, 97) + '...';
+  }
+
+  return cleanedSubject || 'No Subject';
+}
 
 async function parseEmailContent(rawContent) {
   try {
@@ -51,20 +139,26 @@ async function parseEmailContent(rawContent) {
   }
 }
 
+const router = express.Router();
+
 router.post('/email/incoming', express.urlencoded({ extended: true }), async (req, res) => {
   console.log('Received webhook request');
   console.log('Content-Type:', req.headers['content-type']);
-  console.log('Request body:', req.body);
   
   try {
     const rawContent = req.body.body;
     const parsedEmail = await parseEmailContent(rawContent);
     
-    // Extract email data
+    // Extract and clean email data
+    const senderEmail = extractSenderEmail(req.body.sender || parsedEmail.from);
+    const senderName = extractSenderName(req.body.sender || parsedEmail.from);
+    const cleanedSubject = cleanSubject(parsedEmail.subject);
+    
     const emailData = {
       recipient: req.body.recipient || parsedEmail.to,
-      sender: req.body.sender || parsedEmail.from,
-      subject: parsedEmail.subject || 'No Subject',
+      sender: senderEmail,
+      senderName: senderName,
+      subject: cleanedSubject,
       body_html: parsedEmail.html || '',
       body_text: parsedEmail.text || '',
       attachments: parsedEmail.attachments || []
@@ -102,16 +196,18 @@ router.post('/email/incoming', express.urlencoded({ extended: true }), async (re
         INSERT INTO received_emails (
           id, 
           temp_email_id, 
-          from_email, 
+          from_email,
+          from_name,
           subject, 
           body_html,
           body_text,
           received_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
       `, [
         emailId,
         tempEmailId,
         emailData.sender,
+        emailData.senderName,
         emailData.subject,
         emailData.body_html,
         emailData.body_text
