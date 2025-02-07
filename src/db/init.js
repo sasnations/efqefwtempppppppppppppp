@@ -6,17 +6,18 @@ dotenv.config();
 // Create the pool with optimized settings
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 25060, // Add port configuration
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 10, // Reduced from 50 to prevent overloading
-  maxIdle: 5, // Reduced idle connections
-  idleTimeout: 30000, // Reduced idle timeout to 30 seconds
+  connectionLimit: 10,
+  maxIdle: 5,
+  idleTimeout: 30000,
   queueLimit: 0,
   enableKeepAlive: true,
-  keepAliveInitialDelay: 10000, // Reduced initial delay
-  connectTimeout: 20000, // Reduced connection timeout
+  keepAliveInitialDelay: 10000,
+  connectTimeout: 20000,
   ssl: process.env.NODE_ENV === 'production' ? {
     rejectUnauthorized: false
   } : undefined
@@ -135,8 +136,10 @@ async function createTables(connection) {
       id VARCHAR(36) PRIMARY KEY,
       temp_email_id VARCHAR(36) NOT NULL,
       from_email VARCHAR(255) NOT NULL,
+      from_name VARCHAR(255) NOT NULL,
       subject TEXT,
-      body LONGTEXT,
+      body_html LONGTEXT,
+      body_text LONGTEXT,
       received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (temp_email_id) REFERENCES temp_emails(id) ON DELETE CASCADE,
       INDEX idx_temp_email_id (temp_email_id),
@@ -152,7 +155,7 @@ async function createTables(connection) {
       filename VARCHAR(255) NOT NULL,
       content_type VARCHAR(100),
       size BIGINT,
-      url TEXT,
+      content LONGTEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (email_id) REFERENCES received_emails(id) ON DELETE CASCADE,
       INDEX idx_email_id (email_id),
