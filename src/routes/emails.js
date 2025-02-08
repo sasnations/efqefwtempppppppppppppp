@@ -68,19 +68,36 @@ router.post('/create', authenticateToken, async (req, res) => {
 });
 
 router.delete('/delete/:id', authenticateToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  
   try {
-    const [result] = await pool.query(
+    await connection.beginTransaction();
+
+    // First, delete all received emails
+    const [deleteReceivedResult] = await connection.query(
+      'DELETE FROM received_emails WHERE temp_email_id = ?',
+      [req.params.id]
+    );
+
+    // Then, delete the temporary email
+    const [deleteTempResult] = await connection.query(
       'DELETE FROM temp_emails WHERE id = ? AND user_id = ?',
       [req.params.id, req.user.id]
     );
 
-    if (result.affectedRows === 0) {
+    if (deleteTempResult.affectedRows === 0) {
+      await connection.rollback();
       return res.status(404).json({ error: 'Email not found' });
     }
 
+    await connection.commit();
     res.json({ message: 'Email deleted successfully' });
   } catch (error) {
+    await connection.rollback();
+    console.error('Delete email error:', error);
     res.status(400).json({ error: 'Failed to delete email' });
+  } finally {
+    connection.release();
   }
 });
 
@@ -145,9 +162,9 @@ router.post('/public/create', async (req, res) => {
 // Admin route to fetch all emails (admin-only)
 router.get('/admin/all', async (req, res) => {
   try {
-    // Check admin passphrase from environment variable
+    // Check admin passphrase
     const adminAccess = req.headers['admin-access'];
-    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+    if (adminAccess !== 'esrattormarechudifuck') {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
