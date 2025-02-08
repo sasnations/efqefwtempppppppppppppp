@@ -9,6 +9,7 @@ const router = express.Router();
 router.get('/', authenticateToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
+    // Get all active messages and check if the current user has dismissed them
     const [messages] = await connection.query(`
       SELECT m.*, 
              CASE WHEN udm.user_id IS NOT NULL THEN TRUE ELSE FALSE END as dismissed
@@ -20,9 +21,8 @@ router.get('/', authenticateToken, async (req, res) => {
       ORDER BY m.created_at DESC
     `, [req.user.id]);
 
-    // Filter out messages that this user has dismissed
+    // Only return messages that haven't been dismissed by this user
     const activeMessages = messages.filter(msg => !msg.dismissed);
-
     res.json(activeMessages);
   } catch (error) {
     console.error('Failed to fetch messages:', error);
@@ -105,7 +105,7 @@ router.get('/admin', authenticateToken, requireAdmin, async (req, res) => {
       SELECT m.*, u.email as created_by_email,
              COUNT(DISTINCT udm.user_id) as dismiss_count
       FROM custom_messages m
-      LEFT JOIN users u ON m.created_by = u.id
+      LEFT JOIN auth.users u ON m.created_by = u.id
       LEFT JOIN user_dismissed_messages udm ON m.id = udm.message_id
       GROUP BY m.id
       ORDER BY m.created_at DESC
