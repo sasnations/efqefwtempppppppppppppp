@@ -8,6 +8,8 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   const connection = await pool.getConnection();
   try {
+    const userId = req.user?.id || 'anonymous';
+    
     const [messages] = await connection.query(`
       SELECT m.*, 
              CASE WHEN udm.user_id IS NOT NULL THEN TRUE ELSE FALSE END as dismissed
@@ -17,7 +19,7 @@ router.get('/', async (req, res) => {
         AND udm.user_id = ?
       WHERE m.is_active = TRUE
       ORDER BY m.created_at DESC
-    `, [req.user?.id || null]);
+    `, [userId]);
 
     res.json(messages);
   } catch (error) {
@@ -54,13 +56,15 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Dismiss a message for the current user
+// Dismiss a message
 router.post('/:id/dismiss', async (req, res) => {
   const connection = await pool.getConnection();
   try {
+    const userId = req.user?.id || 'anonymous';
+    
     await connection.query(
       'INSERT INTO user_dismissed_messages (user_id, message_id) VALUES (?, ?)',
-      [req.user?.id || 'anonymous', req.params.id]
+      [userId, req.params.id]
     );
 
     res.json({ message: 'Message dismissed successfully' });
