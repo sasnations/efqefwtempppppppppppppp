@@ -168,7 +168,7 @@ async function createTables(connection) {
     );
   `);
 
-  // User dismissed messages table
+  // User dismissed messages table - tracks which users have dismissed which messages
   await connection.query(`
     CREATE TABLE IF NOT EXISTS user_dismissed_messages (
       user_id VARCHAR(36) NOT NULL,
