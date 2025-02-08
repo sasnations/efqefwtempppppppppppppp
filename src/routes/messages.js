@@ -36,9 +36,10 @@ router.post('/', async (req, res) => {
     const id = uuidv4();
 
     await connection.query(
-      'INSERT INTO custom_messages (id, content, type, created_by) VALUES (?, ?, ?, ?)',
-      [id, message, type, req.user?.id || null]
-    );
+  'INSERT INTO custom_messages (id, message, type, created_by) VALUES (?, ?, ?, ?)',
+  [id, message, type, req.user?.id || null]
+);
+
 
     const [createdMessage] = await connection.query(
       'SELECT * FROM custom_messages WHERE id = ?',
