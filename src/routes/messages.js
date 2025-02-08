@@ -36,8 +36,8 @@ router.post('/', async (req, res) => {
     const id = uuidv4();
 
     await connection.query(
-      'INSERT INTO custom_messages (id, message, type, created_by) VALUES (?, ?, ?, ?)',
-      [id, message, type, req.user?.id || null]
+      'INSERT INTO custom_messages (id, content, type) VALUES (?, ?, ?)',
+      [id, message, type]
     );
 
     const [createdMessage] = await connection.query(
@@ -60,7 +60,7 @@ router.post('/:id/dismiss', async (req, res) => {
   try {
     await connection.query(
       'INSERT INTO user_dismissed_messages (user_id, message_id) VALUES (?, ?)',
-      [req.user?.id || null, req.params.id]
+      [req.user?.id || 'anonymous', req.params.id]
     );
 
     res.json({ message: 'Message dismissed successfully' });
@@ -77,10 +77,9 @@ router.get('/admin/all', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [messages] = await connection.query(`
-      SELECT m.*, u.email as created_by_email,
+      SELECT m.*, 
              COUNT(DISTINCT udm.user_id) as dismiss_count
       FROM custom_messages m
-      LEFT JOIN users u ON m.created_by = u.id
       LEFT JOIN user_dismissed_messages udm ON m.id = udm.message_id
       GROUP BY m.id
       ORDER BY m.created_at DESC
