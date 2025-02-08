@@ -6,14 +6,14 @@ dotenv.config();
 // Create the pool with optimized settings
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT || 3306,
+  port: process.env.DB_PORT || 25060, // Add port configuration
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  maxIdle: 5, // Maximum number of idle connections
-  idleTimeout: 30000, // How long a connection can be idle (30 seconds)
+  maxIdle: 5,
+  idleTimeout: 30000,
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
@@ -23,12 +23,11 @@ const pool = mysql.createPool({
   } : undefined
 });
 
-// Enhanced error handling for the pool
+// Add event listeners with better error handling
 pool.on('connection', (connection) => {
   console.log('New database connection established');
   
   connection.on('error', (err) => {
-    console.error('Database connection error:', err.message);
     if (err.code === 'PROTOCOL_CONNECTION_LOST') {
       console.error('Database connection was closed');
     }
@@ -38,21 +37,13 @@ pool.on('connection', (connection) => {
     if (err.code === 'ECONNRESET') {
       console.error('Connection reset by peer');
     }
-    if (err.code === 'PROTOCOL_SEQUENCE_TIMEOUT') {
-      console.error('Connection sequence timeout');
-    }
-  });
-
-  connection.on('end', () => {
-    console.log('Database connection ended');
   });
 });
 
-// Improved health check with timeout and validation
+// Improved health check with timeout
 export async function checkDatabaseConnection() {
-  let connection;
+  const connection = await pool.getConnection();
   try {
-    connection = await pool.getConnection();
     await Promise.race([
       connection.query('SELECT 1'),
       new Promise((_, reject) => 
@@ -64,20 +55,16 @@ export async function checkDatabaseConnection() {
     console.error('Database health check failed:', error.message);
     return false;
   } finally {
-    if (connection) {
-      connection.release();
-    }
+    connection.release();
   }
 }
 
-// Initialize database with better error handling and validation
 export async function initializeDatabase() {
-  let connection;
   try {
     console.log('Attempting to connect to database...');
     console.log('Database host:', process.env.DB_HOST);
     
-    connection = await pool.getConnection();
+    const connection = await pool.getConnection();
     console.log('Successfully connected to database');
     
     // Test the connection with timeout
@@ -96,9 +83,6 @@ export async function initializeDatabase() {
     return pool;
   } catch (error) {
     console.error('Error initializing database:', error.message);
-    if (connection) {
-      connection.release();
-    }
     throw error;
   }
 }
@@ -133,7 +117,7 @@ async function createTables(connection) {
   await connection.query(`
     CREATE TABLE IF NOT EXISTS temp_emails (
       id VARCHAR(36) PRIMARY KEY,
-      user_id VARCHAR(36),
+      user_id VARCHAR(36) NOT NULL,
       email VARCHAR(255) UNIQUE NOT NULL,
       domain_id VARCHAR(36) NOT NULL,
       expires_at TIMESTAMP NOT NULL,
@@ -180,19 +164,19 @@ async function createTables(connection) {
   `);
 
   // Custom messages table
-  await connection.query(`
-    CREATE TABLE IF NOT EXISTS custom_messages (
-      id VARCHAR(36) PRIMARY KEY,
-      content TEXT NOT NULL,
-      type ENUM('info', 'warning', 'success', 'error') NOT NULL DEFAULT 'info',
-      is_active BOOLEAN DEFAULT TRUE,
-      created_by VARCHAR(36),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
-      INDEX idx_active_messages (is_active),
-      INDEX idx_created_at (created_at)
-    );
-  `);
+await connection.query(`
+  CREATE TABLE IF NOT EXISTS custom_messages (
+    id VARCHAR(36) PRIMARY KEY,
+    message TEXT NOT NULL,  // Changed from 'content' to 'message'
+    type ENUM('info', 'warning', 'success', 'error') NOT NULL DEFAULT 'info',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_by VARCHAR(36),  // Made nullable
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_active_messages (is_active),
+    INDEX idx_created_at (created_at)
+  );
+`);
 
   // User dismissed messages table
   await connection.query(`
@@ -208,21 +192,13 @@ async function createTables(connection) {
   `);
 }
 
-// Improved cleanup function with timeout
+// Improved cleanup function
 async function cleanup() {
-  console.log('Starting database cleanup...');
   try {
-    const cleanupTimeout = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Cleanup timeout')), 5000);
-    });
-
-    await Promise.race([
-      pool.end(),
-      cleanupTimeout
-    ]);
-    console.log('All database connections closed successfully');
+    await pool.end();
+    console.log('All database connections closed');
   } catch (err) {
-    console.error('Error during database cleanup:', err.message);
+    console.error('Error closing database connections:', err.message);
   }
 }
 
@@ -231,3 +207,7 @@ process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
 export { pool };
+
+
+inint js code 
+
