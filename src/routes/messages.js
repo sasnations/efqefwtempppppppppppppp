@@ -58,6 +58,29 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
+// Get all messages (admin only)
+router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [messages] = await connection.query(`
+      SELECT m.*, u.email as created_by_email,
+             COUNT(DISTINCT udm.user_id) as dismiss_count
+      FROM custom_messages m
+      LEFT JOIN users u ON m.created_by = u.id
+      LEFT JOIN user_dismissed_messages udm ON m.id = udm.message_id
+      GROUP BY m.id
+      ORDER BY m.created_at DESC
+    `);
+
+    res.json(messages);
+  } catch (error) {
+    console.error('Failed to fetch admin messages:', error);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  } finally {
+    connection.release();
+  }
+});
+
 // Dismiss a message for the current user
 router.post('/:id/dismiss', authenticateToken, async (req, res) => {
   const connection = await pool.getConnection();
@@ -92,29 +115,6 @@ router.post('/:id/dismiss', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Failed to dismiss message:', error);
     res.status(500).json({ error: 'Failed to dismiss message' });
-  } finally {
-    connection.release();
-  }
-});
-
-// Get all messages (admin only)
-router.get('/admin', authenticateToken, requireAdmin, async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const [messages] = await connection.query(`
-      SELECT m.*, u.email as created_by_email,
-             COUNT(DISTINCT udm.user_id) as dismiss_count
-      FROM custom_messages m
-      LEFT JOIN auth.users u ON m.created_by = u.id
-      LEFT JOIN user_dismissed_messages udm ON m.id = udm.message_id
-      GROUP BY m.id
-      ORDER BY m.created_at DESC
-    `);
-
-    res.json(messages);
-  } catch (error) {
-    console.error('Failed to fetch admin messages:', error);
-    res.status(500).json({ error: 'Failed to fetch messages' });
   } finally {
     connection.release();
   }
