@@ -1,9 +1,15 @@
+// backend/src/routes/messages.js
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+
+// Helper function to check admin passphrase
+const checkAdminPassphrase = (req) => {
+  return req.headers['admin-access'] === 'esrattormarechudifuck';
+};
 
 // Get active messages for the current user
 router.get('/', authenticateToken, async (req, res) => {
@@ -32,15 +38,20 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // Create a new message (admin only)
-router.post('/', authenticateToken, requireAdmin, async (req, res) => {
+router.post('/', async (req, res) => {
+  // Check either JWT admin or admin passphrase
+  if (!checkAdminPassphrase(req) && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   const connection = await pool.getConnection();
   try {
     const { message, type } = req.body;
     const id = uuidv4();
 
     await connection.query(
-      'INSERT INTO custom_messages (id, content, type, created_by) VALUES (?, ?, ?, ?)',
-      [id, message, type, req.user.id]
+      'INSERT INTO custom_messages (id, content, type) VALUES (?, ?, ?)',
+      [id, message, type]
     );
 
     const [createdMessage] = await connection.query(
@@ -57,7 +68,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// Dismiss a message for the current user
+// Dismiss a message
 router.post('/:id/dismiss', authenticateToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
@@ -77,16 +88,19 @@ router.post('/:id/dismiss', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all messages with dismissal counts (admin only)
-router.get('/admin', authenticateToken, requireAdmin, async (req, res) => {
+// Get all messages (admin only)
+router.get('/admin/all', async (req, res) => {
+  // Check either JWT admin or admin passphrase
+  if (!checkAdminPassphrase(req) && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   const connection = await pool.getConnection();
   try {
     const [messages] = await connection.query(`
       SELECT m.*, 
-             u.email as created_by_email,
              COUNT(DISTINCT udm.user_id) as dismiss_count
       FROM custom_messages m
-      LEFT JOIN users u ON m.created_by = u.id
       LEFT JOIN user_dismissed_messages udm ON m.id = udm.message_id
       GROUP BY m.id
       ORDER BY m.created_at DESC
@@ -102,7 +116,12 @@ router.get('/admin', authenticateToken, requireAdmin, async (req, res) => {
 });
 
 // Update message status (admin only)
-router.patch('/:id', authenticateToken, requireAdmin, async (req, res) => {
+router.patch('/:id', async (req, res) => {
+  // Check either JWT admin or admin passphrase
+  if (!checkAdminPassphrase(req) && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   const connection = await pool.getConnection();
   try {
     const { is_active } = req.body;
@@ -122,7 +141,12 @@ router.patch('/:id', authenticateToken, requireAdmin, async (req, res) => {
 });
 
 // Delete a message (admin only)
-router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
+router.delete('/:id', async (req, res) => {
+  // Check either JWT admin or admin passphrase
+  if (!checkAdminPassphrase(req) && !req.user?.isAdmin) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   const connection = await pool.getConnection();
   try {
     await connection.query('DELETE FROM custom_messages WHERE id = ?', [req.params.id]);
