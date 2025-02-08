@@ -9,7 +9,6 @@ const router = express.Router();
 router.get('/', authenticateToken, async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    // Get all active messages and check if the current user has dismissed them
     const [messages] = await connection.query(`
       SELECT m.*, 
              CASE WHEN udm.user_id IS NOT NULL THEN TRUE ELSE FALSE END as dismissed
@@ -21,9 +20,7 @@ router.get('/', authenticateToken, async (req, res) => {
       ORDER BY m.created_at DESC
     `, [req.user.id]);
 
-    // Only return messages that haven't been dismissed by this user
-    const activeMessages = messages.filter(msg => !msg.dismissed);
-    res.json(activeMessages);
+    res.json(messages);
   } catch (error) {
     console.error('Failed to fetch messages:', error);
     res.status(500).json({ error: 'Failed to fetch messages' });
@@ -40,7 +37,7 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
     const id = uuidv4();
 
     await connection.query(
-      'INSERT INTO custom_messages (id, content, type, created_by) VALUES (?, ?, ?, ?)',
+      'INSERT INTO custom_messages (id, message, type, created_by) VALUES (?, ?, ?, ?)',
       [id, message, type, req.user.id]
     );
 
@@ -58,8 +55,26 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
+// Dismiss a message for the current user
+router.post('/:id/dismiss', authenticateToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.query(
+      'INSERT INTO user_dismissed_messages (user_id, message_id) VALUES (?, ?)',
+      [req.user.id, req.params.id]
+    );
+
+    res.json({ message: 'Message dismissed successfully' });
+  } catch (error) {
+    console.error('Failed to dismiss message:', error);
+    res.status(500).json({ error: 'Failed to dismiss message' });
+  } finally {
+    connection.release();
+  }
+});
+
 // Get all messages (admin only)
-router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
+router.get('/admin', authenticateToken, requireAdmin, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [messages] = await connection.query(`
@@ -76,45 +91,6 @@ router.get('/admin/all', authenticateToken, requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch admin messages:', error);
     res.status(500).json({ error: 'Failed to fetch messages' });
-  } finally {
-    connection.release();
-  }
-});
-
-// Dismiss a message for the current user
-router.post('/:id/dismiss', authenticateToken, async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    // First check if the message exists and is active
-    const [messages] = await connection.query(
-      'SELECT * FROM custom_messages WHERE id = ? AND is_active = TRUE',
-      [req.params.id]
-    );
-
-    if (messages.length === 0) {
-      return res.status(404).json({ error: 'Message not found or inactive' });
-    }
-
-    // Check if user has already dismissed this message
-    const [existingDismissal] = await connection.query(
-      'SELECT * FROM user_dismissed_messages WHERE user_id = ? AND message_id = ?',
-      [req.user.id, req.params.id]
-    );
-
-    if (existingDismissal.length > 0) {
-      return res.status(400).json({ error: 'Message already dismissed' });
-    }
-
-    // Add dismissal record
-    await connection.query(
-      'INSERT INTO user_dismissed_messages (user_id, message_id) VALUES (?, ?)',
-      [req.user.id, req.params.id]
-    );
-
-    res.json({ message: 'Message dismissed successfully' });
-  } catch (error) {
-    console.error('Failed to dismiss message:', error);
-    res.status(500).json({ error: 'Failed to dismiss message' });
   } finally {
     connection.release();
   }
