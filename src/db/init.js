@@ -162,7 +162,7 @@ async function createTables(connection) {
       is_active BOOLEAN DEFAULT TRUE,
       created_by VARCHAR(36),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
       INDEX idx_active_messages (is_active),
       INDEX idx_created_at (created_at)
     );
