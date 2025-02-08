@@ -6,7 +6,7 @@ dotenv.config();
 // Create the pool with optimized settings
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT || 25060,
+  port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
@@ -168,7 +168,7 @@ async function createTables(connection) {
     );
   `);
 
-  // User dismissed messages table - tracks which users have dismissed which messages
+  // User dismissed messages table
   await connection.query(`
     CREATE TABLE IF NOT EXISTS user_dismissed_messages (
       user_id VARCHAR(36) NOT NULL,
