@@ -8,7 +8,7 @@ const router = express.Router();
 
 // Add this at the top of the file
 const checkAdminPassphrase = (req) => {
-  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
+  return req.headers['admin-access'] === 'esrattormarechudifuck';
 };
 
 // Update the middleware for admin routes
@@ -20,7 +20,7 @@ const requireAdminAccess = (req, res, next) => {
 };
 
 // Create a new blog post
-router.post('/posts', authenticateToken, requireAdminAccess, async (req, res) => {
+router.post('/posts', requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const {
@@ -47,12 +47,11 @@ router.post('/posts', authenticateToken, requireAdminAccess, async (req, res) =>
       `INSERT INTO blog_posts (
         id, title, slug, content, category, meta_title, 
         meta_description, keywords, featured_image, status, 
-        author, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         uuidv4(), title, slug, sanitizedContent, category, meta_title,
-        meta_description, keywords, featured_image, status,
-        req.user.id
+        meta_description, keywords, featured_image, status
       ]
     );
 
@@ -70,10 +69,7 @@ router.get('/posts', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [posts] = await connection.query(
-      `SELECT bp.*, u.email as author_email 
-       FROM blog_posts bp 
-       LEFT JOIN users u ON bp.author = u.id 
-       ORDER BY bp.created_at DESC`
+      `SELECT * FROM blog_posts ORDER BY created_at DESC`
     );
     res.json(posts);
   } catch (error) {
@@ -89,10 +85,7 @@ router.get('/posts/:slug', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [posts] = await connection.query(
-      `SELECT bp.*, u.email as author_email 
-       FROM blog_posts bp 
-       LEFT JOIN users u ON bp.author = u.id 
-       WHERE bp.slug = ?`,
+      'SELECT * FROM blog_posts WHERE slug = ?',
       [req.params.slug]
     );
 
@@ -110,7 +103,7 @@ router.get('/posts/:slug', async (req, res) => {
 });
 
 // Update a blog post
-router.put('/posts/:id', authenticateToken, requireAdminAccess, async (req, res) => {
+router.put('/posts/:id', requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const {
@@ -138,11 +131,11 @@ router.put('/posts/:id', authenticateToken, requireAdminAccess, async (req, res)
         title = ?, slug = ?, content = ?, category = ?,
         meta_title = ?, meta_description = ?, keywords = ?,
         featured_image = ?, status = ?, updated_at = NOW()
-       WHERE id = ? AND author = ?`,
+       WHERE id = ?`,
       [
         title, slug, sanitizedContent, category,
         meta_title, meta_description, keywords,
-        featured_image, status, req.params.id, req.user.id
+        featured_image, status, req.params.id
       ]
     );
 
@@ -156,12 +149,12 @@ router.put('/posts/:id', authenticateToken, requireAdminAccess, async (req, res)
 });
 
 // Delete a blog post
-router.delete('/posts/:id', authenticateToken, requireAdminAccess, async (req, res) => {
+router.delete('/posts/:id', requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.query(
-      'DELETE FROM blog_posts WHERE id = ? AND author = ?',
-      [req.params.id, req.user.id]
+      'DELETE FROM blog_posts WHERE id = ?',
+      [req.params.id]
     );
     res.json({ message: 'Blog post deleted successfully' });
   } catch (error) {
