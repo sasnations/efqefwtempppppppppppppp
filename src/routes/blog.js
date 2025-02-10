@@ -1,13 +1,26 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
-import { authenticateToken, requireAdmin } from '../middleware/auth.js';
+import { authenticateToken } from '../middleware/auth.js';
 import DOMPurify from 'dompurify';
 
 const router = express.Router();
 
+// Add this at the top of the file
+const checkAdminPassphrase = (req) => {
+  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
+};
+
+// Update the middleware for admin routes
+const requireAdminAccess = (req, res, next) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  next();
+};
+
 // Create a new blog post
-router.post('/posts', authenticateToken, requireAdmin, async (req, res) => {
+router.post('/posts', authenticateToken, requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const {
@@ -97,7 +110,7 @@ router.get('/posts/:slug', async (req, res) => {
 });
 
 // Update a blog post
-router.put('/posts/:id', authenticateToken, requireAdmin, async (req, res) => {
+router.put('/posts/:id', authenticateToken, requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const {
@@ -143,7 +156,7 @@ router.put('/posts/:id', authenticateToken, requireAdmin, async (req, res) => {
 });
 
 // Delete a blog post
-router.delete('/posts/:id', authenticateToken, requireAdmin, async (req, res) => {
+router.delete('/posts/:id', authenticateToken, requireAdminAccess, async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.query(
