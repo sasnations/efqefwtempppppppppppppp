@@ -111,6 +111,40 @@ router.get('/posts/:slug', async (req, res) => {
   }
 });
 
+// Delete a blog post
+router.delete('/posts/:id', async (req, res) => {
+  // Check admin access
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    // First check if post exists
+    const [posts] = await connection.query(
+      'SELECT id FROM blog_posts WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (posts.length === 0) {
+      return res.status(404).json({ error: 'Blog post not found' });
+    }
+
+    // Delete the post
+    await connection.query(
+      'DELETE FROM blog_posts WHERE id = ?',
+      [req.params.id]
+    );
+
+    res.json({ message: 'Blog post deleted successfully' });
+  } catch (error) {
+    console.error('Failed to delete blog post:', error);
+    res.status(500).json({ error: 'Failed to delete blog post' });
+  } finally {
+    connection.release();
+  }
+});
+
 // Get blog categories
 router.get('/categories', async (req, res) => {
   const connection = await pool.getConnection();
