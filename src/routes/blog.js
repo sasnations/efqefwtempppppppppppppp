@@ -12,12 +12,11 @@ const DOMPurify = createDOMPurify(window);
 
 // Helper function to check admin passphrase
 const checkAdminPassphrase = (req) => {
-  return req.headers['admin-access'] === 'esrattormarechudifuck';
+  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
 };
 
 // Create a new blog post
 router.post('/posts', async (req, res) => {
-  // Check admin access
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
@@ -32,8 +31,13 @@ router.post('/posts', async (req, res) => {
       meta_description,
       keywords,
       featured_image,
-      status = 'draft'
+      status = 'draft',
+      author
     } = req.body;
+
+    if (!title || !content || !category) {
+      return res.status(400).json({ error: 'Title, content and category are required' });
+    }
 
     // Generate slug from title
     const slug = title
@@ -54,19 +58,25 @@ router.post('/posts', async (req, res) => {
     // Sanitize HTML content
     const sanitizedContent = DOMPurify.sanitize(content);
 
-    const [result] = await connection.query(
+    const id = uuidv4();
+    await connection.query(
       `INSERT INTO blog_posts (
         id, title, slug, content, category, meta_title, 
         meta_description, keywords, featured_image, status, 
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        author, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
-        uuidv4(), title, slug, sanitizedContent, category, meta_title,
-        meta_description, keywords, featured_image, status
+        id, title, slug, sanitizedContent, category, meta_title,
+        meta_description, keywords, featured_image, status,
+        author
       ]
     );
 
-    res.json({ message: 'Blog post created successfully' });
+    res.json({ 
+      message: 'Blog post created successfully',
+      id,
+      slug 
+    });
   } catch (error) {
     console.error('Failed to create blog post:', error);
     res.status(500).json({ error: 'Failed to create blog post' });
@@ -118,7 +128,6 @@ router.get('/posts/:slug', async (req, res) => {
 
 // Update a blog post
 router.put('/posts/:id', async (req, res) => {
-  // Check admin access
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
@@ -133,10 +142,15 @@ router.put('/posts/:id', async (req, res) => {
       meta_description,
       keywords,
       featured_image,
-      status
+      status,
+      author
     } = req.body;
 
-    // First check if post exists
+    if (!title || !content || !category) {
+      return res.status(400).json({ error: 'Title, content and category are required' });
+    }
+
+    // Check if post exists
     const [existingPost] = await connection.query(
       'SELECT id FROM blog_posts WHERE id = ?',
       [req.params.id]
@@ -176,16 +190,20 @@ router.put('/posts/:id', async (req, res) => {
         keywords = ?,
         featured_image = ?, 
         status = ?, 
+        author = ?,
         updated_at = NOW()
        WHERE id = ?`,
       [
         title, slug, sanitizedContent, category,
         meta_title, meta_description, keywords,
-        featured_image, status, req.params.id
+        featured_image, status, author, req.params.id
       ]
     );
 
-    res.json({ message: 'Blog post updated successfully' });
+    res.json({ 
+      message: 'Blog post updated successfully',
+      slug 
+    });
   } catch (error) {
     console.error('Failed to update blog post:', error);
     res.status(500).json({ error: 'Failed to update blog post' });
@@ -196,14 +214,13 @@ router.put('/posts/:id', async (req, res) => {
 
 // Delete a blog post
 router.delete('/posts/:id', async (req, res) => {
-  // Check admin access
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
 
   const connection = await pool.getConnection();
   try {
-    // First check if post exists
+    // Check if post exists
     const [posts] = await connection.query(
       'SELECT id FROM blog_posts WHERE id = ?',
       [req.params.id]
@@ -213,7 +230,6 @@ router.delete('/posts/:id', async (req, res) => {
       return res.status(404).json({ error: 'Blog post not found' });
     }
 
-    // Delete the post
     await connection.query(
       'DELETE FROM blog_posts WHERE id = ?',
       [req.params.id]
