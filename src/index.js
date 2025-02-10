@@ -10,6 +10,7 @@ import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
+import blogRoutes from './routes/blog.js';
 
 dotenv.config();
 
@@ -78,7 +79,7 @@ app.use('/emails', emailRoutes);
 app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/messages', messageRoutes);
-
+app.use('/blog', blogRoutes);
 // Handle preflight requests for /admin/all
 app.options('/emails/admin/all', cors()); // Add this line to handle preflight
 
