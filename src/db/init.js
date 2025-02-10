@@ -220,14 +220,5 @@ async function cleanup() {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+// Export pool and createTables for use in other files
 export { pool, createTables };
-
-// Example usage in another file
-import { pool } from './db.js';
-
-// Run the initializeDatabase function
-pool.on('acquire', () => {
-  pool.query('SELECT 1')
-    .then(rows => console.log(rows))
-    .catch(err => console.error(err));
-});
