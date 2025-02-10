@@ -180,6 +180,46 @@ async function createTables(connection) {
       INDEX idx_user_dismissals (user_id, dismissed_at)
     );
   `);
+
+  // Blog posts table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS blog_posts (
+      id VARCHAR(36) PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      slug VARCHAR(255) NOT NULL UNIQUE,
+      content LONGTEXT NOT NULL,
+      category VARCHAR(100) NOT NULL,
+      meta_title VARCHAR(255),
+      meta_description TEXT,
+      keywords TEXT,
+      featured_image VARCHAR(255),
+      status ENUM('draft', 'published') DEFAULT 'draft',
+      author_email VARCHAR(255),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_slug (slug),
+      INDEX idx_category (category),
+      INDEX idx_status (status),
+      INDEX idx_created_at (created_at)
+    );
+  `);
+
+  // Blog images table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS blog_images (
+      id VARCHAR(36) PRIMARY KEY,
+      post_id VARCHAR(36) NOT NULL,
+      url VARCHAR(255) NOT NULL,
+      alt_text TEXT,
+      caption TEXT,
+      is_featured BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      \`order\` INT DEFAULT 0,
+      FOREIGN KEY (post_id) REFERENCES blog_posts(id) ON DELETE CASCADE,
+      INDEX idx_post_id (post_id),
+      INDEX idx_is_featured (is_featured)
+    );
+  `);
 }
 
 // Cleanup function
