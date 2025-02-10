@@ -6,12 +6,12 @@ import DOMPurify from 'dompurify';
 
 const router = express.Router();
 
-// Add this at the top of the file
+// Helper function to check admin passphrase
 const checkAdminPassphrase = (req) => {
   return req.headers['admin-access'] === 'esrattormarechudifuck';
 };
 
-// Update the middleware for admin routes
+// Middleware for admin routes
 const requireAdminAccess = (req, res, next) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -39,6 +39,16 @@ router.post('/posts', requireAdminAccess, async (req, res) => {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
+
+    // Check for duplicate slug
+    const [existingSlugs] = await connection.query(
+      'SELECT id FROM blog_posts WHERE slug = ?',
+      [slug]
+    );
+
+    if (existingSlugs.length > 0) {
+      return res.status(400).json({ error: 'A post with this title already exists' });
+    }
 
     // Sanitize HTML content
     const sanitizedContent = DOMPurify.sanitize(content);
@@ -69,7 +79,9 @@ router.get('/posts', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [posts] = await connection.query(
-      `SELECT * FROM blog_posts ORDER BY created_at DESC`
+      `SELECT * FROM blog_posts 
+       ${!checkAdminPassphrase(req) ? 'WHERE status = "published"' : ''} 
+       ORDER BY created_at DESC`
     );
     res.json(posts);
   } catch (error) {
@@ -85,7 +97,8 @@ router.get('/posts/:slug', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [posts] = await connection.query(
-      'SELECT * FROM blog_posts WHERE slug = ?',
+      `SELECT * FROM blog_posts 
+       WHERE slug = ? ${!checkAdminPassphrase(req) ? 'AND status = "published"' : ''}`,
       [req.params.slug]
     );
 
@@ -122,6 +135,16 @@ router.put('/posts/:id', requireAdminAccess, async (req, res) => {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
+
+    // Check for duplicate slug
+    const [existingSlugs] = await connection.query(
+      'SELECT id FROM blog_posts WHERE slug = ? AND id != ?',
+      [slug, req.params.id]
+    );
+
+    if (existingSlugs.length > 0) {
+      return res.status(400).json({ error: 'A post with this title already exists' });
+    }
 
     // Sanitize HTML content
     const sanitizedContent = DOMPurify.sanitize(content);
@@ -170,7 +193,9 @@ router.get('/categories', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [categories] = await connection.query(
-      'SELECT DISTINCT category FROM blog_posts ORDER BY category'
+      `SELECT DISTINCT category FROM blog_posts 
+       ${!checkAdminPassphrase(req) ? 'WHERE status = "published"' : ''} 
+       ORDER BY category`
     );
     res.json(categories.map(c => c.category));
   } catch (error) {
