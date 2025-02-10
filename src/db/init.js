@@ -78,7 +78,7 @@ export async function initializeDatabase() {
 }
 
 async function createTables(connection) {
-  // Users table
+  // Users table - Make sure id is VARCHAR(36)
   await connection.query(`
     CREATE TABLE IF NOT EXISTS users (
       id VARCHAR(36) PRIMARY KEY,
@@ -153,7 +153,7 @@ async function createTables(connection) {
     );
   `);
 
-  // Blog posts table
+  // Blog posts table - Make sure author is VARCHAR(36) to match users.id
   await connection.query(`
     CREATE TABLE IF NOT EXISTS blog_posts (
       id VARCHAR(36) PRIMARY KEY,
@@ -220,5 +220,4 @@ async function cleanup() {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
-// Export pool and createTables for use in other files
 export { pool, createTables };
