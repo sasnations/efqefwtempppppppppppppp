@@ -1,7 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
-import { authenticateToken } from '../middleware/auth.js';
 import DOMPurify from 'dompurify';
 
 const router = express.Router();
@@ -80,7 +79,7 @@ router.get('/posts', async (req, res) => {
   try {
     const [posts] = await connection.query(
       `SELECT * FROM blog_posts 
-       ${!checkAdminPassphrase(req) ? 'WHERE status = "published"' : ''} 
+       ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
        ORDER BY created_at DESC`
     );
     res.json(posts);
@@ -98,7 +97,7 @@ router.get('/posts/:slug', async (req, res) => {
   try {
     const [posts] = await connection.query(
       `SELECT * FROM blog_posts 
-       WHERE slug = ? ${!checkAdminPassphrase(req) ? 'AND status = "published"' : ''}`,
+       WHERE slug = ? ${!checkAdminPassphrase(req) ? "AND status = 'published'" : ''}`,
       [req.params.slug]
     );
 
@@ -194,7 +193,7 @@ router.get('/categories', async (req, res) => {
   try {
     const [categories] = await connection.query(
       `SELECT DISTINCT category FROM blog_posts 
-       ${!checkAdminPassphrase(req) ? 'WHERE status = "published"' : ''} 
+       ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
        ORDER BY category`
     );
     res.json(categories.map(c => c.category));
