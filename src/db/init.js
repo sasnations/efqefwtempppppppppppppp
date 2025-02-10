@@ -153,6 +153,30 @@ async function createTables(connection) {
     );
   `);
 
+  // Blog posts table
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS blog_posts (
+      id VARCHAR(36) PRIMARY KEY,
+      title TEXT NOT NULL,
+      slug VARCHAR(255) NOT NULL UNIQUE,
+      content LONGTEXT NOT NULL,
+      category VARCHAR(255),
+      meta_title VARCHAR(255),
+      meta_description TEXT,
+      keywords TEXT,
+      featured_image VARCHAR(255),
+      status ENUM('draft', 'published') DEFAULT 'draft',
+      author VARCHAR(36),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (author) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_slug (slug),
+      INDEX idx_category (category),
+      INDEX idx_status (status),
+      INDEX idx_created_at (created_at)
+    );
+  `);
+
   // Custom messages table
   await connection.query(`
     CREATE TABLE IF NOT EXISTS custom_messages (
@@ -196,4 +220,14 @@ async function cleanup() {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
-export { pool };
+export { pool, createTables };
+
+// Example usage in another file
+import { pool } from './db.js';
+
+// Run the initializeDatabase function
+pool.on('acquire', () => {
+  pool.query('SELECT 1')
+    .then(rows => console.log(rows))
+    .catch(err => console.error(err));
+});
