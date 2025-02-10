@@ -17,6 +17,11 @@ const checkAdminPassphrase = (req) => {
 
 // Create a new blog post
 router.post('/posts', async (req, res) => {
+  // Check admin access
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   const connection = await pool.getConnection();
   try {
     const {
@@ -106,6 +111,84 @@ router.get('/posts/:slug', async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch blog post:', error);
     res.status(500).json({ error: 'Failed to fetch blog post' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Update a blog post
+router.put('/posts/:id', async (req, res) => {
+  // Check admin access
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const {
+      title,
+      content,
+      category,
+      meta_title,
+      meta_description,
+      keywords,
+      featured_image,
+      status
+    } = req.body;
+
+    // First check if post exists
+    const [existingPost] = await connection.query(
+      'SELECT id FROM blog_posts WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (existingPost.length === 0) {
+      return res.status(404).json({ error: 'Blog post not found' });
+    }
+
+    // Generate new slug if title changed
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
+    // Check for duplicate slug
+    const [existingSlugs] = await connection.query(
+      'SELECT id FROM blog_posts WHERE slug = ? AND id != ?',
+      [slug, req.params.id]
+    );
+
+    if (existingSlugs.length > 0) {
+      return res.status(400).json({ error: 'A post with this title already exists' });
+    }
+
+    // Sanitize HTML content
+    const sanitizedContent = DOMPurify.sanitize(content);
+
+    await connection.query(
+      `UPDATE blog_posts SET 
+        title = ?, 
+        slug = ?, 
+        content = ?, 
+        category = ?,
+        meta_title = ?, 
+        meta_description = ?, 
+        keywords = ?,
+        featured_image = ?, 
+        status = ?, 
+        updated_at = NOW()
+       WHERE id = ?`,
+      [
+        title, slug, sanitizedContent, category,
+        meta_title, meta_description, keywords,
+        featured_image, status, req.params.id
+      ]
+    );
+
+    res.json({ message: 'Blog post updated successfully' });
+  } catch (error) {
+    console.error('Failed to update blog post:', error);
+    res.status(500).json({ error: 'Failed to update blog post' });
   } finally {
     connection.release();
   }
