@@ -422,7 +422,7 @@ router.get('/categories', async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [categories] = await connection.query(
-      `SELECT category, COUNT(*) as post_count 
+      `SELECT DISTINCT category as name, COUNT(*) as post_count 
        FROM blog_posts 
        ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
        GROUP BY category
@@ -436,6 +436,7 @@ router.get('/categories', async (req, res) => {
     connection.release();
   }
 });
+
 
 // Get blog tags
 router.get('/tags', async (req, res) => {
