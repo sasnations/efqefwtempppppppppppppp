@@ -6,16 +6,68 @@ import createDOMPurify from 'dompurify';
 
 const router = express.Router();
 
-// Initialize DOMPurify
+// Initialize DOMPurify with custom config
 const window = new JSDOM('').window;
 const DOMPurify = createDOMPurify(window);
+
+// Configure DOMPurify to allow iframes from trusted sources
+DOMPurify.setConfig({
+  ADD_TAGS: ['iframe'],
+  ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'src', 'title', 'width', 'height'],
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_TAGS: [
+    'a', 'b', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'i', 'iframe', 'img', 'li', 'ol', 'p', 'span', 'strong', 'ul'
+  ]
+});
+
+// Function to validate YouTube URLs
+const isValidYouTubeUrl = (url) => {
+  return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
+};
+
+// Modify the sanitization function
+const sanitizeContent = (content) => {
+  return DOMPurify.sanitize(content, {
+    CUSTOM_ELEMENT_HANDLING: {
+      tagNameCheck: /^(iframe)$/,
+      attributeNameCheck: /^(src|width|height|frameborder|allow|allowfullscreen)$/,
+      allowCustomizedBuiltInElements: true
+    },
+    FORBID_ATTR: [],
+    FORBID_TAGS: [],
+    ALLOW_UNKNOWN_PROTOCOLS: true,
+    transformTags: {
+      'iframe': (tagName, attribs) => {
+        // Only allow YouTube embeds
+        if (!isValidYouTubeUrl(attribs.src)) {
+          return {
+            tagName: 'p',
+            text: '[Invalid video embed]'
+          };
+        }
+        return {
+          tagName: 'iframe',
+          attribs: {
+            ...attribs,
+            width: '100%',
+            height: '400',
+            frameborder: '0',
+            allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
+            allowfullscreen: ''
+          }
+        };
+      }
+    }
+  });
+};
 
 // Helper function to check admin passphrase
 const checkAdminPassphrase = (req) => {
   return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
 };
 
-// Create a new blog post
+// Update the post creation route
 router.post('/posts', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -43,13 +95,11 @@ router.post('/posts', async (req, res) => {
       return res.status(400).json({ error: 'Title, content and category are required' });
     }
 
-    // Generate slug from title
     const slug = title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
 
-    // Check for duplicate slug
     const [existingSlugs] = await connection.query(
       'SELECT id FROM blog_posts WHERE slug = ?',
       [slug]
@@ -59,8 +109,8 @@ router.post('/posts', async (req, res) => {
       return res.status(400).json({ error: 'A post with this title already exists' });
     }
 
-    // Sanitize HTML content
-    const sanitizedContent = DOMPurify.sanitize(content);
+    // Sanitize HTML content with YouTube iframe support
+    const sanitizedContent = sanitizeContent(content);
 
     const id = uuidv4();
     await connection.query(
@@ -182,7 +232,7 @@ router.put('/posts/:id', async (req, res) => {
     }
 
     // Sanitize HTML content
-    const sanitizedContent = DOMPurify.sanitize(content);
+    const sanitizedContent = sanitizeContent(content);
 
     await connection.query(
       `UPDATE blog_posts SET 
