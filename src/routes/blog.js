@@ -32,7 +32,11 @@ router.post('/posts', async (req, res) => {
       keywords,
       featured_image,
       status = 'draft',
-      author
+      author,
+      is_featured = false,
+      is_trending = false,
+      featured_order = null,
+      trending_order = null
     } = req.body;
 
     if (!title || !content || !category) {
@@ -63,12 +67,13 @@ router.post('/posts', async (req, res) => {
       `INSERT INTO blog_posts (
         id, title, slug, content, category, meta_title, 
         meta_description, keywords, featured_image, status, 
-        author, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        author, created_at, updated_at, is_featured, is_trending,
+        featured_order, trending_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?, ?)`,
       [
         id, title, slug, sanitizedContent, category, meta_title,
         meta_description, keywords, featured_image, status,
-        author
+        author, is_featured, is_trending, featured_order, trending_order
       ]
     );
 
@@ -257,6 +262,95 @@ router.get('/categories', async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Update featured/trending status
+router.patch('/posts/:id/status', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const { is_featured, is_trending, featured_order, trending_order } = req.body;
+
+    await connection.query(
+      `UPDATE blog_posts 
+       SET is_featured = ?, is_trending = ?, featured_order = ?, trending_order = ?
+       WHERE id = ?`,
+      [is_featured, is_trending, featured_order, trending_order, req.params.id]
+    );
+
+    res.json({ message: 'Post status updated successfully' });
+  } catch (error) {
+    console.error('Failed to update post status:', error);
+    res.status(500).json({ error: 'Failed to update post status' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Reorder featured/trending posts
+router.post('/posts/reorder', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    const { posts, type } = req.body; // type can be 'featured' or 'trending'
+    const orderField = type === 'trending' ? 'trending_order' : 'featured_order';
+
+    for (const post of posts) {
+      await connection.query(
+        `UPDATE blog_posts SET ${orderField} = ? WHERE id = ?`,
+        [post.order, post.id]
+      );
+    }
+
+    res.json({ message: 'Posts reordered successfully' });
+  } catch (error) {
+    console.error('Failed to reorder posts:', error);
+    res.status(500).json({ error: 'Failed to reorder posts' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Get featured posts
+router.get('/posts/featured', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [posts] = await connection.query(
+      `SELECT * FROM blog_posts 
+       WHERE is_featured = true 
+       ORDER BY featured_order ASC, created_at DESC`
+    );
+    res.json(posts);
+  } catch (error) {
+    console.error('Failed to fetch featured posts:', error);
+    res.status(500).json({ error: 'Failed to fetch featured posts' });
+  } finally {
+    connection.release();
+  }
+});
+
+// Get trending posts
+router.get('/posts/trending', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [posts] = await connection.query(
+      `SELECT * FROM blog_posts 
+       WHERE is_trending = true 
+       ORDER BY trending_order ASC, created_at DESC`
+    );
+    res.json(posts);
+  } catch (error) {
+    console.error('Failed to fetch trending posts:', error);
+    res.status(500).json({ error: 'Failed to fetch trending posts' });
   } finally {
     connection.release();
   }
