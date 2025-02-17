@@ -20,12 +20,15 @@ const port = process.env.PORT || 3000;
 
 // Create mail transporter
 export const mailTransporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.render.com', // Render's SMTP server
+  host: process.env.SMTP_HOST,
   port: parseInt(process.env.SMTP_PORT || '587'),
   secure: false, // Use TLS
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS
+  },
+  tls: {
+    rejectUnauthorized: false // Only use this in development!
   }
 });
 
