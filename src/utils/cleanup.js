@@ -4,10 +4,10 @@ export async function cleanupOldEmails() {
   try {
     console.log('Starting cleanup process for old received emails...');
     
-    // Only delete received emails older than 3 days
+    // Delete received emails older than 14 days
     const [result] = await pool.query(`
       DELETE re FROM received_emails re
-      WHERE re.received_at < DATE_SUB(NOW(), INTERVAL 3 DAY)
+      WHERE re.received_at < DATE_SUB(NOW(), INTERVAL 14 DAY)
     `);
 
     console.log(`Cleanup completed. Deleted ${result.affectedRows} old received emails.`);
