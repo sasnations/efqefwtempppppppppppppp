@@ -11,11 +11,32 @@ import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
 import blogRoutes from './routes/blog.js';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Create mail transporter
+export const mailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.render.com', // Render's SMTP server
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: false, // Use TLS
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+// Verify mail configuration on startup
+mailTransporter.verify((error, success) => {
+  if (error) {
+    console.error('Mail server verification failed:', error);
+  } else {
+    console.log('Mail server is ready to send emails');
+  }
+});
 
 // Security middleware
 app.use(helmet({
