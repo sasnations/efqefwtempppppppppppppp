@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { mailTransporter } from '../index.js';
+import { getPasswordResetEmailTemplate } from '../templates/passwordReset.js';
 
 const router = express.Router();
 
@@ -100,7 +102,78 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Change password
+// Request password reset
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Check if user exists
+    const [users] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate reset token
+    const resetToken = uuidv4();
+    const resetExpiry = new Date(Date.now() + 3600000); // 1 hour from now
+
+    // Store reset token in database
+    await pool.query(
+      'UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?',
+      [resetToken, resetExpiry, email]
+    );
+
+    // Generate reset link
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+    // Send email
+    const emailTemplate = getPasswordResetEmailTemplate(resetLink);
+    await mailTransporter.sendMail({
+      from: `"Boomlify Support" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: emailTemplate.subject,
+      html: emailTemplate.html
+    });
+
+    res.json({ message: 'Password reset email sent' });
+  } catch (error) {
+    console.error('Password reset request error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+// Reset password with token
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    // Find user with valid reset token
+    const [users] = await pool.query(
+      'SELECT id FROM users WHERE reset_token = ? AND reset_token_expires > NOW()',
+      [token]
+    );
+
+    if (users.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password and clear reset token
+    await pool.query(
+      'UPDATE users SET password = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?',
+      [hashedPassword, users[0].id]
+    );
+
+    res.json({ message: 'Password reset successful' });
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// Change password (when logged in)
 router.post('/change-password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
