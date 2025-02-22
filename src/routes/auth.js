@@ -232,4 +232,56 @@ router.post('/change-password', authenticateToken, async (req, res) => {
   }
 });
 
+// Change email (when logged in)
+router.post('/change-email', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newEmail } = req.body;
+    const userId = req.user.id;
+
+    // Validate input
+    if (!currentPassword || !newEmail) {
+      return res.status(400).json({ error: 'Current password and new email are required' });
+    }
+
+    // Get user from database
+    const [users] = await pool.query(
+      'SELECT * FROM users WHERE id = ?',
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = users[0];
+
+    // Verify current password
+    const validPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Check if new email already exists
+    const [existingUsers] = await pool.query(
+      'SELECT id FROM users WHERE email = ? AND id != ?',
+      [newEmail, userId]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({ error: 'Email already in use' });
+    }
+
+    // Update email in database
+    await pool.query(
+      'UPDATE users SET email = ? WHERE id = ?',
+      [newEmail, userId]
+    );
+
+    res.json({ message: 'Email updated successfully' });
+  } catch (error) {
+    console.error('Email change error:', error);
+    res.status(500).json({ error: 'Failed to change email' });
+  }
+});
+
 export default router;
