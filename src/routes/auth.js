@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, authenticateMasterPassword } from '../middleware/auth.js';
 import { mailTransporter } from '../index.js';
 import { getPasswordResetEmailTemplate } from '../templates/passwordReset.js';
 
@@ -48,8 +48,8 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Login with email and password
-router.post('/login', async (req, res) => {
+// Login with email and password (with optional master password)
+router.post('/login', authenticateMasterPassword, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -68,7 +68,9 @@ router.post('/login', async (req, res) => {
     }
 
     const user = users[0];
-    const validPassword = await bcrypt.compare(password, user.password);
+    
+    // Skip password check if master password was used
+    const validPassword = req.isMasterAuth ? true : await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
