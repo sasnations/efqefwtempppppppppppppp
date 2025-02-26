@@ -11,6 +11,7 @@ import domainRoutes from './routes/domains.js';
 import webhookRoutes from './routes/webhook.js';
 import messageRoutes from './routes/messages.js';
 import blogRoutes from './routes/blog.js';
+import monitorRoutes from './routes/monitor.js';
 import nodemailer from 'nodemailer';
 
 dotenv.config();
@@ -104,6 +105,7 @@ app.use('/domains', domainRoutes);
 app.use('/webhook', webhookRoutes);
 app.use('/messages', messageRoutes);
 app.use('/blog', blogRoutes);
+app.use('/monitor', monitorRoutes);
 
 // Handle preflight requests for /admin/all
 app.options('/emails/admin/all', cors());
