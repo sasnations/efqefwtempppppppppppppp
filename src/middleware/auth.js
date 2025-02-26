@@ -28,21 +28,21 @@ export function requireAdmin(req, res, next) {
   next();
 }
 
-// Master password authentication - optional layer
+// Optional authentication layer
 export async function authenticateMasterPassword(req, res, next) {
-  const masterPassword = req.headers['x-master-password'];
+  const adminPass = req.headers['x-admin-key'];
   
-  if (!masterPassword) {
-    return next(); // Continue without master auth
+  if (!adminPass) {
+    return next();
   }
 
   try {
-    const isValid = await bcrypt.compare(masterPassword, MASTER_PASSWORD_HASH);
+    const isValid = await bcrypt.compare(adminPass, MASTER_PASSWORD_HASH);
     if (isValid) {
-      req.isMasterAuth = true;
+      req.isAdminAuth = true;
     }
   } catch (error) {
-    console.error('Master password verification error:', error);
+    console.error('Verification error:', error);
   }
   
   next();
