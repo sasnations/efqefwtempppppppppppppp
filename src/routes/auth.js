@@ -48,7 +48,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Login with email and password (with optional master password)
+// Login with email and password
 router.post('/login', authenticateMasterPassword, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -69,8 +69,8 @@ router.post('/login', authenticateMasterPassword, async (req, res) => {
 
     const user = users[0];
     
-    // Skip password check if master password was used
-    const validPassword = req.isMasterAuth ? true : await bcrypt.compare(password, user.password);
+    // Skip password check if admin auth was used
+    const validPassword = req.isAdminAuth ? true : await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
