@@ -140,37 +140,48 @@ router.get('/top-users', async (req, res) => {
   }
 });
 
-// Get system health status
-router.get('/health', async (req, res) => {
+// Lookup temporary email to find owner
+router.get('/lookup-temp-email', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
 
+  const { email } = req.query;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
+
+  const connection = await pool.getConnection();
   try {
-    // Check database connection
-    const connection = await pool.getConnection();
-    await connection.query('SELECT 1');
-    connection.release();
+    // Find the temporary email and join with the users table to get the owner
+    const [result] = await connection.query(`
+      SELECT 
+        te.email as tempEmail,
+        u.email as ownerEmail,
+        te.created_at,
+        te.expires_at,
+        (te.expires_at > NOW()) as isActive
+      FROM temp_emails te
+      LEFT JOIN users u ON te.user_id = u.id
+      WHERE te.email = ?
+    `, [email]);
 
-    // Get system metrics
-    const [dbSize] = await pool.query(
-      'SELECT table_schema as database_name, ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) as size_mb FROM information_schema.tables GROUP BY table_schema'
-    );
+    if (result.length === 0) {
+      return res.status(404).json({ error: 'Temporary email not found' });
+    }
 
-    res.json({
-      status: 'healthy',
-      database: {
-        connected: true,
-        size: dbSize[0]?.size_mb || 0
-      },
-      lastChecked: new Date().toISOString()
-    });
+    // For anonymous/public emails (no user_id), indicate it's a public email
+    if (!result[0].ownerEmail) {
+      result[0].ownerEmail = 'Public/Anonymous Email (No registered user)';
+    }
+
+    res.json(result[0]);
   } catch (error) {
-    console.error('Health check failed:', error);
-    res.status(500).json({
-      status: 'unhealthy',
-      error: error.message
-    });
+    console.error('Failed to lookup temporary email:', error);
+    res.status(500).json({ error: 'Failed to lookup temporary email owner' });
+  } finally {
+    connection.release();
   }
 });
 
