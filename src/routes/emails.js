@@ -135,20 +135,35 @@ router.get('/', authenticateToken, async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
+    const search = req.query.search || '';
 
-    // First get the total count
-    const [countResult] = await pool.query(
-      'SELECT COUNT(*) as total FROM temp_emails WHERE user_id = ?',
-      [req.user.id]
-    );
-
+    // First get the total count with search
+    let countQuery = 'SELECT COUNT(*) as total FROM temp_emails WHERE user_id = ?';
+    let countParams = [req.user.id];
+    
+    // Add search condition if search term is provided
+    if (search) {
+      countQuery += ' AND email LIKE ?';
+      countParams.push(`%${search}%`);
+    }
+    
+    const [countResult] = await pool.query(countQuery, countParams);
     const totalCount = countResult[0].total;
 
-    // Then get the paginated data
-    const [emails] = await pool.query(
-      'SELECT * FROM temp_emails WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-      [req.user.id, limit, offset]
-    );
+    // Then get the paginated data with search
+    let dataQuery = 'SELECT * FROM temp_emails WHERE user_id = ?';
+    let dataParams = [req.user.id];
+    
+    // Add search condition if search term is provided
+    if (search) {
+      dataQuery += ' AND email LIKE ?';
+      dataParams.push(`%${search}%`);
+    }
+    
+    dataQuery += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    dataParams.push(limit, offset);
+    
+    const [emails] = await pool.query(dataQuery, dataParams);
 
     // Return the data with pagination metadata
     res.json({
