@@ -220,6 +220,33 @@ async function createTables(connection) {
       INDEX idx_is_featured (is_featured)
     );
   `);
+
+  // Request logs table for IP and Request ID tracking
+  await connection.query(`
+    CREATE TABLE IF NOT EXISTS request_logs (
+      id VARCHAR(36) PRIMARY KEY,
+      request_id VARCHAR(64) NOT NULL,
+      client_ip VARCHAR(45) NOT NULL,
+      user_id VARCHAR(36),
+      user_agent TEXT,
+      request_path VARCHAR(255) NOT NULL,
+      request_method VARCHAR(10) NOT NULL,
+      status_code INT,
+      response_time INT,
+      geo_country VARCHAR(100),
+      geo_city VARCHAR(100),
+      geo_region VARCHAR(100),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      referer VARCHAR(512),
+      is_bot BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      INDEX idx_request_id (request_id),
+      INDEX idx_client_ip (client_ip),
+      INDEX idx_created_at (created_at),
+      INDEX idx_path (request_path),
+      INDEX idx_user_id (user_id)
+    );
+  `);
 }
 
 // Cleanup function
