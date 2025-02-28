@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import { initializeDatabase, checkDatabaseConnection, pool } from './db/init.js';
 import { cleanupOldEmails } from './utils/cleanup.js';
+import { requestTrackerMiddleware } from './middleware/requestTracker.js';
 import authRoutes from './routes/auth.js';
 import emailRoutes from './routes/emails.js';
 import domainRoutes from './routes/domains.js';
@@ -61,6 +62,9 @@ app.use(helmet({
 // Add compression middleware
 app.use(compression());
 
+// Add request tracking middleware
+app.use(requestTrackerMiddleware);
+
 // Security headers
 app.use((req, res, next) => {
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -76,7 +80,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Admin-Access'],
   credentials: true,
-  exposedHeaders: ['Content-Length', 'X-Requested-With']
+  exposedHeaders: ['Content-Length', 'X-Requested-With', 'X-Request-ID']
 }));
 
 app.use(express.json());
