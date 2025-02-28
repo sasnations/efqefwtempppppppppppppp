@@ -47,10 +47,11 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://www.google.com/recaptcha/", "https://www.gstatic.com/recaptcha/"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://boomlify.com"],
+      connectSrc: ["'self'", "https://boomlify.com", "https://www.google.com/recaptcha/"],
+      frameSrc: ["https://www.google.com/recaptcha/"]
     },
   },
   crossOriginEmbedderPolicy: false,
