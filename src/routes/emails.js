@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken } from '../middleware/auth.js';
 import { pool } from '../db/init.js';
 import compression from 'compression';
+import { rateLimitMiddleware, verifyCaptcha, checkCaptchaRequired } from '../middleware/rateLimit.js';
 
 const router = express.Router();
 
@@ -68,7 +69,8 @@ router.get('/:id/received', authenticateToken, async (req, res) => {
   }
 });
 
-router.post('/create', authenticateToken, async (req, res) => {
+// Create email with rate limit and optional CAPTCHA verification
+router.post('/create', authenticateToken, rateLimitMiddleware, checkCaptchaRequired, verifyCaptcha, async (req, res) => {
   try {
     const { email, domainId } = req.body;
     const id = uuidv4();
@@ -265,11 +267,21 @@ router.get('/public/:email', async (req, res) => {
   }
 });
 
-// Create public temporary email (no auth required)
-router.post('/public/create', async (req, res) => {
+// Create public temporary email (no auth required) with rate limiting and CAPTCHA
+router.post('/public/create', rateLimitMiddleware, checkCaptchaRequired, verifyCaptcha, async (req, res) => {
   try {
     const { email, domainId } = req.body;
     const id = uuidv4();
+    
+    // Add CAPTCHA information to response if required
+    if (res.locals.captchaRequired && !req.body.captchaResponse) {
+      return res.status(400).json({
+        error: 'CAPTCHA_REQUIRED',
+        captchaRequired: true,
+        captchaSiteKey: res.locals.captchaSiteKey,
+        message: 'You have exceeded the rate limit. Please complete the CAPTCHA.'
+      });
+    }
     
     // Set expiry date to 48 hours from now
     const expiresAt = new Date();
