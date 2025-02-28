@@ -210,7 +210,23 @@ export async function verifyCaptcha(req, res, next) {
     const data = response.data;
     
     if (data.success) {
-      // CAPTCHA verification successful, proceed with request
+      // CAPTCHA verification successful, reset rate limit counter
+      if (req.user) {
+        // For authenticated users
+        const userId = req.user.id;
+        if (rateLimitStore.userLimits[userId]) {
+          rateLimitStore.userLimits[userId].count = 0; // Reset counter
+          rateLimitStore.userLimits[userId].captchaRequired = false; // No longer require CAPTCHA
+        }
+      } else {
+        // For anonymous users
+        if (rateLimitStore.limits[clientIp]) {
+          rateLimitStore.limits[clientIp].count = 0; // Reset counter
+          rateLimitStore.limits[clientIp].captchaRequired = false; // No longer require CAPTCHA
+        }
+      }
+      
+      // Proceed with request
       next();
     } else {
       return res.status(400).json({ error: 'INVALID_CAPTCHA', message: 'CAPTCHA verification failed' });
