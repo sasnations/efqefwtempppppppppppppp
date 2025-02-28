@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { authenticateToken } from '../middleware/auth.js';
 import { pool } from '../db/init.js';
 import compression from 'compression';
-import { rateLimitMiddleware, verifyCaptcha, checkCaptchaRequired } from '../middleware/rateLimit.js';
+import { rateLimitMiddleware, verifyCaptcha, checkCaptchaRequired, rateLimitStore } from '../middleware/rateLimit.js';
 
 const router = express.Router();
 
@@ -78,6 +78,25 @@ router.post('/create', authenticateToken, rateLimitMiddleware, checkCaptchaRequi
     // Set expiry date to 2 months from now
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + 2);
+    
+    // If CAPTCHA was provided and successfully verified, reset rate limit counter
+    const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    if (req.body.captchaResponse) {
+      if (req.user) {
+        // For authenticated users
+        const userId = req.user.id;
+        if (rateLimitStore.userLimits[userId]) {
+          rateLimitStore.userLimits[userId].count = 0; // Reset counter
+          rateLimitStore.userLimits[userId].captchaRequired = false; // No longer require CAPTCHA
+        }
+      } else {
+        // For anonymous users
+        if (rateLimitStore.limits[clientIp]) {
+          rateLimitStore.limits[clientIp].count = 0; // Reset counter
+          rateLimitStore.limits[clientIp].captchaRequired = false; // No longer require CAPTCHA
+        }
+      }
+    }
 
     const [result] = await pool.query(
       'INSERT INTO temp_emails (id, user_id, email, domain_id, expires_at) VALUES (?, ?, ?, ?, ?)',
@@ -286,6 +305,15 @@ router.post('/public/create', rateLimitMiddleware, checkCaptchaRequired, verifyC
     // Set expiry date to 48 hours from now
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 48);
+    
+    // If CAPTCHA was provided and successfully verified, reset rate limit counter
+    const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    if (req.body.captchaResponse) {
+      if (rateLimitStore.limits[clientIp]) {
+        rateLimitStore.limits[clientIp].count = 0; // Reset counter
+        rateLimitStore.limits[clientIp].captchaRequired = false; // No longer require CAPTCHA
+      }
+    }
 
     const [result] = await pool.query(
       'INSERT INTO temp_emails (id, email, domain_id, expires_at) VALUES (?, ?, ?, ?)',
