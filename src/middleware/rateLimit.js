@@ -11,8 +11,8 @@ const rateLimitStore = {
   // Rotating CAPTCHA keys
   captchaKeys: [
     { 
-      siteKey: process.env.CAPTCHA_SITE_KEY_1 || '6LeJJ-UgAAAAAPGWWrhpHGCwwV-1ogC2kjOa_NKm', 
-      secretKey: process.env.CAPTCHA_SECRET_KEY_1 || '6LeJJ-UgAAAAAHPkW-3XK2qv2HTCHn-q6lbOt-gL',
+      siteKey: process.env.CAPTCHA_SITE_KEY_1, 
+      secretKey: process.env.CAPTCHA_SECRET_KEY_1,
       useCount: 0,
       active: true
     },
