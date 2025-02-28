@@ -1,5 +1,11 @@
 import express from 'express';
 import { pool } from '../db/init.js';
+import {
+  lookupRequestById,
+  lookupRequestsByIp,
+  getIpStats,
+  getRecentIps
+} from '../middleware/requestTracker.js';
 
 const router = express.Router();
 
@@ -46,6 +52,19 @@ router.get('/stats', async (req, res) => {
       'SELECT COUNT(*) as total FROM received_emails WHERE DATE(received_at) = CURDATE()'
     );
 
+    // Get request logs stats
+    const [requestsCount] = await connection.query(
+      'SELECT COUNT(*) as total FROM request_logs'
+    );
+
+    const [todayRequestsCount] = await connection.query(
+      'SELECT COUNT(*) as total FROM request_logs WHERE DATE(created_at) = CURDATE()'
+    );
+
+    const [uniqueIpsCount] = await connection.query(
+      'SELECT COUNT(DISTINCT client_ip) as total FROM request_logs'
+    );
+
     res.json({
       users: {
         total: usersCount[0].total,
@@ -58,6 +77,11 @@ router.get('/stats', async (req, res) => {
       receivedEmails: {
         total: receivedEmailsCount[0].total,
         today: todayReceivedCount[0].total
+      },
+      requests: {
+        total: requestsCount[0].total,
+        today: todayRequestsCount[0].total,
+        uniqueIps: uniqueIpsCount[0].total
       }
     });
   } catch (error) {
@@ -182,6 +206,210 @@ router.get('/lookup-temp-email', async (req, res) => {
     res.status(500).json({ error: 'Failed to lookup temporary email owner' });
   } finally {
     connection.release();
+  }
+});
+
+// NEW API ENDPOINTS FOR IP AND REQUEST TRACKING
+
+// Get recent IPs
+router.get('/recent-ips', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const recentIps = await getRecentIps(limit);
+    res.json(recentIps);
+  } catch (error) {
+    console.error('Failed to fetch recent IPs:', error);
+    res.status(500).json({ error: 'Failed to fetch recent IPs' });
+  }
+});
+
+// Lookup IP and get detailed statistics
+router.get('/lookup-ip', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { ip } = req.query;
+  
+  if (!ip) {
+    return res.status(400).json({ error: 'IP parameter is required' });
+  }
+
+  try {
+    // Get IP statistics
+    const ipStats = await getIpStats(ip);
+    
+    // Get recent requests from this IP
+    const limit = parseInt(req.query.limit) || 50;
+    const recentRequests = await lookupRequestsByIp(ip, limit);
+    
+    // Get associated user information
+    const userDetails = [];
+    if (ipStats.associatedUsers && ipStats.associatedUsers.length > 0) {
+      const [users] = await pool.query(
+        `SELECT id, email, created_at, last_login 
+         FROM users
+         WHERE id IN (?)`,
+        [ipStats.associatedUsers]
+      );
+      
+      for (const user of users) {
+        const [emailCount] = await pool.query(
+          'SELECT COUNT(*) as total FROM temp_emails WHERE user_id = ?',
+          [user.id]
+        );
+        
+        userDetails.push({
+          ...user,
+          emailCount: emailCount[0].total
+        });
+      }
+    }
+    
+    res.json({
+      ip,
+      stats: ipStats,
+      recentRequests,
+      associatedUsers: userDetails
+    });
+  } catch (error) {
+    console.error('Failed to lookup IP:', error);
+    res.status(500).json({ error: 'Failed to lookup IP information' });
+  }
+});
+
+// Lookup request by ID
+router.get('/lookup-request', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { requestId } = req.query;
+  
+  if (!requestId) {
+    return res.status(400).json({ error: 'Request ID parameter is required' });
+  }
+
+  try {
+    const request = await lookupRequestById(requestId);
+    
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    
+    // If the request has a user ID, get user information
+    let userInfo = null;
+    if (request.user_id) {
+      const [users] = await pool.query(
+        'SELECT id, email, created_at, last_login FROM users WHERE id = ?',
+        [request.user_id]
+      );
+      
+      if (users.length > 0) {
+        const [emailCount] = await pool.query(
+          'SELECT COUNT(*) as total FROM temp_emails WHERE user_id = ?',
+          [request.user_id]
+        );
+        
+        userInfo = {
+          ...users[0],
+          emailCount: emailCount[0].total
+        };
+      }
+    }
+    
+    res.json({
+      request,
+      userInfo
+    });
+  } catch (error) {
+    console.error('Failed to lookup request:', error);
+    res.status(500).json({ error: 'Failed to lookup request information' });
+  }
+});
+
+// Get request statistics
+router.get('/request-stats', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    // Get hourly request counts for the last 24 hours
+    const [hourlyStats] = await pool.query(`
+      SELECT 
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00') as hour,
+        COUNT(*) as count
+      FROM request_logs
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      GROUP BY hour
+      ORDER BY hour DESC
+    `);
+    
+    // Get top paths
+    const [topPaths] = await pool.query(`
+      SELECT request_path, COUNT(*) as count
+      FROM request_logs
+      GROUP BY request_path
+      ORDER BY count DESC
+      LIMIT 20
+    `);
+    
+    // Get response time stats
+    const [responseTimeStats] = await pool.query(`
+      SELECT 
+        MIN(response_time) as min,
+        MAX(response_time) as max,
+        AVG(response_time) as avg,
+        COUNT(*) as total
+      FROM request_logs
+    `);
+    
+    // Get error rate
+    const [errorRateStats] = await pool.query(`
+      SELECT 
+        SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success,
+        SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END) as client_error,
+        SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END) as server_error,
+        COUNT(*) as total
+      FROM request_logs
+    `);
+    
+    // Get geographic distribution
+    const [geoStats] = await pool.query(`
+      SELECT geo_country, COUNT(*) as count
+      FROM request_logs
+      WHERE geo_country != ''
+      GROUP BY geo_country
+      ORDER BY count DESC
+      LIMIT 20
+    `);
+    
+    // Get bot vs human ratio
+    const [botStats] = await pool.query(`
+      SELECT is_bot, COUNT(*) as count
+      FROM request_logs
+      GROUP BY is_bot
+    `);
+    
+    res.json({
+      hourlyStats,
+      topPaths,
+      responseTimeStats: responseTimeStats[0],
+      errorRateStats: errorRateStats[0],
+      geoStats,
+      botStats: {
+        bots: botStats.find(stat => stat.is_bot === 1)?.count || 0,
+        humans: botStats.find(stat => stat.is_bot === 0)?.count || 0
+      }
+    });
+  } catch (error) {
+    console.error('Failed to fetch request stats:', error);
+    res.status(500).json({ error: 'Failed to fetch request statistics' });
   }
 });
 
