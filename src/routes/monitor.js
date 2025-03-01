@@ -250,12 +250,13 @@ router.get('/lookup-ip', async (req, res) => {
     // Get associated user information
     const userDetails = [];
     if (ipStats.associatedUsers && ipStats.associatedUsers.length > 0) {
-      const [users] = await pool.query(
-        `SELECT id, email, created_at, last_login 
-         FROM users
-         WHERE id IN (?)`,
-        [ipStats.associatedUsers]
-      );
+      const placeholders = ipStats.associatedUsers.map(() => '?').join(',');
+const [users] = await pool.query(
+  `SELECT id, email, created_at, last_login 
+   FROM users
+   WHERE id IN (${placeholders})`,
+  ipStats.associatedUsers
+);
       
       for (const user of users) {
         const [emailCount] = await pool.query(
