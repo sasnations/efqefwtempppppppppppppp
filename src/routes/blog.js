@@ -1,3 +1,4 @@
+// Import required modules
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
@@ -10,6 +11,97 @@ const router = express.Router();
 const window = new JSDOM('').window;
 const DOMPurify = createDOMPurify(window);
 
+// Simple in-memory cache implementation
+const cache = {
+  posts: new Map(),
+  categories: new Map(),
+  featuredPosts: new Map(),
+  trendingPosts: new Map(),
+  TTL: 5 * 60 * 1000, // 5 minutes cache TTL
+};
+
+// Cache cleanup interval
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of cache.posts.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.posts.delete(key);
+    }
+  }
+  for (const [key, value] of cache.categories.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.categories.delete(key);
+    }
+  }
+  for (const [key, value] of cache.featuredPosts.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.featuredPosts.delete(key);
+    }
+  }
+  for (const [key, value] of cache.trendingPosts.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.trendingPosts.delete(key);
+    }
+  }
+}, 60000); // Clean up every minute
+
+// Function to generate meta tags HTML
+function generateMetaTags(post) {
+  return `
+    <!-- Primary Meta Tags -->
+    <title>${post.meta_title || post.title} | Boomlify Blog</title>
+    <meta name="title" content="${post.meta_title || post.title}">
+    <meta name="description" content="${post.meta_description}">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="${post.og_type || 'article'}">
+    <meta property="og:url" content="${post.canonical_url}">
+    <meta property="og:title" content="${post.og_title || post.title}">
+    <meta property="og:description" content="${post.og_description || post.meta_description}">
+    <meta property="og:image" content="${post.og_image || post.featured_image}">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="${post.twitter_card || 'summary_large_image'}">
+    <meta property="twitter:url" content="${post.canonical_url}">
+    <meta property="twitter:title" content="${post.twitter_title || post.title}">
+    <meta property="twitter:description" content="${post.twitter_description || post.meta_description}">
+    <meta property="twitter:image" content="${post.twitter_image || post.featured_image}">
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="${post.canonical_url}">
+    
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+      ${JSON.stringify(post.structured_data || {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": post.title,
+        "description": post.meta_description,
+        "image": post.featured_image,
+        "author": {
+          "@type": "Person",
+          "name": post.author || "Boomlify Team"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Boomlify",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://boomlify.com/logo.png"
+          }
+        },
+        "datePublished": post.created_at,
+        "dateModified": post.updated_at
+      })}
+    </script>
+  `;
+}
+
+// Function to validate YouTube URLs
+const isValidYouTubeUrl = (url) => {
+  return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
+};
+
 // Configure DOMPurify to allow iframes from trusted sources
 DOMPurify.setConfig({
   ADD_TAGS: ['iframe'],
@@ -21,45 +113,17 @@ DOMPurify.setConfig({
   ]
 });
 
-// Function to validate YouTube URLs
-const isValidYouTubeUrl = (url) => {
-  return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
-};
-
-// Modify the sanitization function
-const sanitizeContent = (content) => {
-  return DOMPurify.sanitize(content, {
-    CUSTOM_ELEMENT_HANDLING: {
-      tagNameCheck: /^(iframe)$/,
-      attributeNameCheck: /^(src|width|height|frameborder|allow|allowfullscreen)$/,
-      allowCustomizedBuiltInElements: true
-    },
-    FORBID_ATTR: [],
-    FORBID_TAGS: [],
-    ALLOW_UNKNOWN_PROTOCOLS: true,
-    transformTags: {
-      'iframe': (tagName, attribs) => {
-        // Only allow YouTube embeds
-        if (!isValidYouTubeUrl(attribs.src)) {
-          return {
-            tagName: 'p',
-            text: '[Invalid video embed]'
-          };
-        }
-        return {
-          tagName: 'iframe',
-          attribs: {
-            ...attribs,
-            width: '100%',
-            height: '400',
-            frameborder: '0',
-            allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
-            allowfullscreen: ''
-          }
-        };
-      }
-    }
-  });
+// Function to invalidate cache for a specific post
+const invalidateCache = (postId = null) => {
+  if (postId) {
+    cache.posts.delete(postId);
+    cache.posts.delete('all');
+  } else {
+    cache.posts.clear();
+  }
+  cache.categories.clear();
+  cache.featuredPosts.clear();
+  cache.trendingPosts.clear();
 };
 
 // Helper function to check admin passphrase
@@ -67,7 +131,78 @@ const checkAdminPassphrase = (req) => {
   return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
 };
 
-// Update the post creation route
+// Get all blog posts with SSR meta tags
+router.get('/posts', async (req, res) => {
+  try {
+    // Check cache first
+    const cachedPosts = cache.posts.get('all');
+    if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
+      return res.json(cachedPosts.data);
+    }
+
+    const [posts] = await pool.query(
+      `SELECT * FROM blog_posts 
+       ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
+       ORDER BY created_at DESC`
+    );
+
+    // Add meta tags to each post
+    const postsWithMeta = posts.map(post => ({
+      ...post,
+      metaTags: generateMetaTags(post)
+    }));
+
+    // Cache the results
+    cache.posts.set('all', {
+      data: postsWithMeta,
+      timestamp: Date.now()
+    });
+
+    res.json(postsWithMeta);
+  } catch (error) {
+    console.error('Failed to fetch blog posts:', error);
+    res.status(500).json({ error: 'Failed to fetch blog posts' });
+  }
+});
+
+// Get a single blog post by slug with SSR meta tags
+router.get('/posts/:slug', async (req, res) => {
+  try {
+    // Check cache first
+    const cachedPost = cache.posts.get(req.params.slug);
+    if (cachedPost && Date.now() < cachedPost.timestamp + cache.TTL) {
+      return res.json(cachedPost.data);
+    }
+
+    const [posts] = await pool.query(
+      `SELECT * FROM blog_posts 
+       WHERE slug = ? ${!checkAdminPassphrase(req) ? "AND status = 'published'" : ''}`,
+      [req.params.slug]
+    );
+
+    if (posts.length === 0) {
+      return res.status(404).json({ error: 'Blog post not found' });
+    }
+
+    const post = {
+      ...posts[0],
+      metaTags: generateMetaTags(posts[0])
+    };
+
+    // Cache the result
+    cache.posts.set(req.params.slug, {
+      data: post,
+      timestamp: Date.now()
+    });
+
+    res.json(post);
+  } catch (error) {
+    console.error('Failed to fetch blog post:', error);
+    res.status(500).json({ error: 'Failed to fetch blog post' });
+  }
+});
+
+// Create a new blog post
 router.post('/posts', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -88,7 +223,13 @@ router.post('/posts', async (req, res) => {
       is_featured = false,
       is_trending = false,
       featured_order = null,
-      trending_order = null
+      trending_order = null,
+      og_title,
+      og_description,
+      og_image,
+      twitter_title,
+      twitter_description,
+      twitter_image
     } = req.body;
 
     if (!title || !content || !category) {
@@ -109,8 +250,7 @@ router.post('/posts', async (req, res) => {
       return res.status(400).json({ error: 'A post with this title already exists' });
     }
 
-    // Sanitize HTML content with YouTube iframe support
-    const sanitizedContent = sanitizeContent(content);
+    const sanitizedContent = DOMPurify.sanitize(content);
 
     const id = uuidv4();
     await connection.query(
@@ -118,14 +258,20 @@ router.post('/posts', async (req, res) => {
         id, title, slug, content, category, meta_title, 
         meta_description, keywords, featured_image, status, 
         author, created_at, updated_at, is_featured, is_trending,
-        featured_order, trending_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?, ?)`,
+        featured_order, trending_order, og_title, og_description,
+        og_image, twitter_title, twitter_description, twitter_image
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, title, slug, sanitizedContent, category, meta_title,
         meta_description, keywords, featured_image, status,
-        author, is_featured, is_trending, featured_order, trending_order
+        author, is_featured, is_trending, featured_order, trending_order,
+        og_title, og_description, og_image, twitter_title,
+        twitter_description, twitter_image
       ]
     );
+
+    // Invalidate cache
+    invalidateCache();
 
     res.json({ 
       message: 'Blog post created successfully',
@@ -135,47 +281,6 @@ router.post('/posts', async (req, res) => {
   } catch (error) {
     console.error('Failed to create blog post:', error);
     res.status(500).json({ error: 'Failed to create blog post' });
-  } finally {
-    connection.release();
-  }
-});
-
-// Get all blog posts
-router.get('/posts', async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const [posts] = await connection.query(
-      `SELECT * FROM blog_posts 
-       ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
-       ORDER BY created_at DESC`
-    );
-    res.json(posts);
-  } catch (error) {
-    console.error('Failed to fetch blog posts:', error);
-    res.status(500).json({ error: 'Failed to fetch blog posts' });
-  } finally {
-    connection.release();
-  }
-});
-
-// Get a single blog post by slug
-router.get('/posts/:slug', async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    const [posts] = await connection.query(
-      `SELECT * FROM blog_posts 
-       WHERE slug = ? ${!checkAdminPassphrase(req) ? "AND status = 'published'" : ''}`,
-      [req.params.slug]
-    );
-
-    if (posts.length === 0) {
-      return res.status(404).json({ error: 'Blog post not found' });
-    }
-
-    res.json(posts[0]);
-  } catch (error) {
-    console.error('Failed to fetch blog post:', error);
-    res.status(500).json({ error: 'Failed to fetch blog post' });
   } finally {
     connection.release();
   }
@@ -198,14 +303,19 @@ router.put('/posts/:id', async (req, res) => {
       keywords,
       featured_image,
       status,
-      author
+      author,
+      og_title,
+      og_description,
+      og_image,
+      twitter_title,
+      twitter_description,
+      twitter_image
     } = req.body;
 
     if (!title || !content || !category) {
       return res.status(400).json({ error: 'Title, content and category are required' });
     }
 
-    // Check if post exists
     const [existingPost] = await connection.query(
       'SELECT id FROM blog_posts WHERE id = ?',
       [req.params.id]
@@ -215,13 +325,11 @@ router.put('/posts/:id', async (req, res) => {
       return res.status(404).json({ error: 'Blog post not found' });
     }
 
-    // Generate new slug if title changed
     const slug = title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
 
-    // Check for duplicate slug
     const [existingSlugs] = await connection.query(
       'SELECT id FROM blog_posts WHERE slug = ? AND id != ?',
       [slug, req.params.id]
@@ -231,8 +339,7 @@ router.put('/posts/:id', async (req, res) => {
       return res.status(400).json({ error: 'A post with this title already exists' });
     }
 
-    // Sanitize HTML content
-    const sanitizedContent = sanitizeContent(content);
+    const sanitizedContent = DOMPurify.sanitize(content);
 
     await connection.query(
       `UPDATE blog_posts SET 
@@ -246,14 +353,26 @@ router.put('/posts/:id', async (req, res) => {
         featured_image = ?, 
         status = ?, 
         author = ?,
+        og_title = ?,
+        og_description = ?,
+        og_image = ?,
+        twitter_title = ?,
+        twitter_description = ?,
+        twitter_image = ?,
         updated_at = NOW()
        WHERE id = ?`,
       [
         title, slug, sanitizedContent, category,
         meta_title, meta_description, keywords,
-        featured_image, status, author, req.params.id
+        featured_image, status, author,
+        og_title, og_description, og_image,
+        twitter_title, twitter_description, twitter_image,
+        req.params.id
       ]
     );
+
+    // Invalidate cache
+    invalidateCache(req.params.id);
 
     res.json({ 
       message: 'Blog post updated successfully',
@@ -275,7 +394,6 @@ router.delete('/posts/:id', async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    // Check if post exists
     const [posts] = await connection.query(
       'SELECT id FROM blog_posts WHERE id = ?',
       [req.params.id]
@@ -290,6 +408,9 @@ router.delete('/posts/:id', async (req, res) => {
       [req.params.id]
     );
 
+    // Invalidate cache
+    invalidateCache(req.params.id);
+
     res.json({ message: 'Blog post deleted successfully' });
   } catch (error) {
     console.error('Failed to delete blog post:', error);
@@ -301,19 +422,31 @@ router.delete('/posts/:id', async (req, res) => {
 
 // Get blog categories
 router.get('/categories', async (req, res) => {
-  const connection = await pool.getConnection();
   try {
-    const [categories] = await connection.query(
+    // Check cache first
+    const cachedCategories = cache.categories.get('all');
+    if (cachedCategories && Date.now() < cachedCategories.timestamp + cache.TTL) {
+      return res.json(cachedCategories.data);
+    }
+
+    const [categories] = await pool.query(
       `SELECT DISTINCT category FROM blog_posts 
        ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
        ORDER BY category`
     );
-    res.json(categories.map(c => c.category));
+
+    const categoryList = categories.map(c => c.category);
+
+    // Cache the results
+    cache.categories.set('all', {
+      data: categoryList,
+      timestamp: Date.now()
+    });
+
+    res.json(categoryList);
   } catch (error) {
     console.error('Failed to fetch categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
-  } finally {
-    connection.release();
   }
 });
 
@@ -333,6 +466,9 @@ router.patch('/posts/:id/status', async (req, res) => {
        WHERE id = ?`,
       [is_featured, is_trending, featured_order, trending_order, req.params.id]
     );
+
+    // Invalidate cache
+    invalidateCache();
 
     res.json({ message: 'Post status updated successfully' });
   } catch (error) {
@@ -361,6 +497,9 @@ router.post('/posts/reorder', async (req, res) => {
       );
     }
 
+    // Invalidate cache
+    invalidateCache();
+
     res.json({ message: 'Posts reordered successfully' });
   } catch (error) {
     console.error('Failed to reorder posts:', error);
@@ -372,37 +511,69 @@ router.post('/posts/reorder', async (req, res) => {
 
 // Get featured posts
 router.get('/posts/featured', async (req, res) => {
-  const connection = await pool.getConnection();
   try {
-    const [posts] = await connection.query(
+    // Check cache first
+    const cachedPosts = cache.featuredPosts.get('all');
+    if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
+      return res.json(cachedPosts.data);
+    }
+
+    const [posts] = await pool.query(
       `SELECT * FROM blog_posts 
        WHERE is_featured = true 
        ORDER BY featured_order ASC, created_at DESC`
     );
-    res.json(posts);
+
+    // Add meta tags to each post
+    const postsWithMeta = posts.map(post => ({
+      ...post,
+      metaTags: generateMetaTags(post)
+    }));
+
+    // Cache the results
+    cache.featuredPosts.set('all', {
+      data: postsWithMeta,
+      timestamp: Date.now()
+    });
+
+    res.json(postsWithMeta);
   } catch (error) {
     console.error('Failed to fetch featured posts:', error);
     res.status(500).json({ error: 'Failed to fetch featured posts' });
-  } finally {
-    connection.release();
   }
 });
 
 // Get trending posts
 router.get('/posts/trending', async (req, res) => {
-  const connection = await pool.getConnection();
   try {
-    const [posts] = await connection.query(
+    // Check cache first
+    const cachedPosts = cache.trendingPosts.get('all');
+    if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
+      return res.json(cachedPosts.data);
+    }
+
+    const [posts] = await pool.query(
       `SELECT * FROM blog_posts 
        WHERE is_trending = true 
        ORDER BY trending_order ASC, created_at DESC`
     );
-    res.json(posts);
+
+    // Add meta tags to each post
+    const postsWithMeta = posts.map(post => ({
+      ...post,
+      metaTags: generateMetaTags(post)
+    }));
+
+    // Cache the results
+    cache.trendingPosts.set('all', {
+      data: postsWithMeta,
+      timestamp: Date.now()
+    });
+
+    res.json(postsWithMeta);
   } catch (error) {
     console.error('Failed to fetch trending posts:', error);
     res.status(500).json({ error: 'Failed to fetch trending posts' });
-  } finally {
-    connection.release();
   }
 });
 
