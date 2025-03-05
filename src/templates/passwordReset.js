@@ -17,21 +17,6 @@ export const getPasswordResetEmailTemplate = (resetLink) => ({
               padding: 20px;
               text-align: center;
             }
-            .profile-logo {
-              width: 40px;
-              height: 40px;
-              border-radius: 50%;
-              background-color: #4A90E2;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              overflow: hidden;
-            }
-            .profile-logo img {
-              width: 100%;
-              height: 100%;
-              object-fit: cover;
-            }
             .content {
               padding: 20px;
               line-height: 1.5;
@@ -55,19 +40,9 @@ export const getPasswordResetEmailTemplate = (resetLink) => ({
         </head>
         <body>
           <div class="email-container">
-            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 20px;">
-              <tr>
-                <td width="40">
-                  <div class="profile-logo">
-                    <img src="https://boomlify.com/logo.png" alt="B">
-                  </div>
-                </td>
-                <td style="padding-left: 10px;">
-                  <div style="font-weight: bold;">Boomlify Support</div>
-                  <div style="color: #666; font-size: 13px;">support@boomlify.com</div>
-                </td>
-              </tr>
-            </table>
+            <div class="header">
+              <h1>Reset Your Password</h1>
+            </div>
             <div class="content">
               <p>Hello,</p>
               <p>We received a request to reset your password. Click the button below to create a new password:</p>
