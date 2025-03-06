@@ -11,7 +11,7 @@ const router = express.Router();
 const window = new JSDOM('').window;
 const DOMPurify = createDOMPurify(window);
 
-// Simple in-memory cache implementation
+// Cache implementation
 const cache = {
   posts: new Map(),
   categories: new Map(),
@@ -45,8 +45,15 @@ setInterval(() => {
   }
 }, 60000); // Clean up every minute
 
+// Helper function to check admin passphrase
+const checkAdminPassphrase = (req) => {
+  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
+};
+
 // Function to generate meta tags HTML
 function generateMetaTags(post) {
+  const canonicalUrl = `https://boomlify.com/blog/${post.slug}`;
+  
   return `
     <!-- Primary Meta Tags -->
     <title>${post.meta_title || post.title} | Boomlify Blog</title>
@@ -55,29 +62,34 @@ function generateMetaTags(post) {
     
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="${post.og_type || 'article'}">
-    <meta property="og:url" content="${post.canonical_url}">
+    <meta property="og:url" content="${canonicalUrl}">
     <meta property="og:title" content="${post.og_title || post.title}">
     <meta property="og:description" content="${post.og_description || post.meta_description}">
     <meta property="og:image" content="${post.og_image || post.featured_image}">
     
     <!-- Twitter -->
     <meta property="twitter:card" content="${post.twitter_card || 'summary_large_image'}">
-    <meta property="twitter:url" content="${post.canonical_url}">
+    <meta property="twitter:url" content="${canonicalUrl}">
     <meta property="twitter:title" content="${post.twitter_title || post.title}">
     <meta property="twitter:description" content="${post.twitter_description || post.meta_description}">
     <meta property="twitter:image" content="${post.twitter_image || post.featured_image}">
     
     <!-- Canonical URL -->
-    <link rel="canonical" href="${post.canonical_url}">
+    <link rel="canonical" href="${canonicalUrl}">
     
     <!-- Structured Data -->
     <script type="application/ld+json">
-      ${JSON.stringify(post.structured_data || {
+      ${JSON.stringify({
         "@context": "https://schema.org",
         "@type": "BlogPosting",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": canonicalUrl
+        },
         "headline": post.title,
         "description": post.meta_description,
         "image": post.featured_image,
+        "url": canonicalUrl,
         "author": {
           "@type": "Person",
           "name": post.author || "Boomlify Team"
@@ -97,44 +109,21 @@ function generateMetaTags(post) {
   `;
 }
 
-// Function to validate YouTube URLs
-const isValidYouTubeUrl = (url) => {
-  return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
-};
-
-// Configure DOMPurify to allow iframes from trusted sources
-DOMPurify.setConfig({
-  ADD_TAGS: ['iframe'],
-  ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'src', 'title', 'width', 'height'],
-  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-  ALLOWED_TAGS: [
-    'a', 'b', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'i', 'iframe', 'img', 'li', 'ol', 'p', 'span', 'strong', 'ul'
-  ]
-});
-
-// Function to invalidate cache for a specific post
-const invalidateCache = (postId = null) => {
-  if (postId) {
-    cache.posts.delete(postId);
-    cache.posts.delete('all');
-  } else {
-    cache.posts.clear();
-  }
+// Function to invalidate all related caches
+function invalidateRelatedCaches(slug = null) {
+  cache.posts.delete('all');
   cache.categories.clear();
   cache.featuredPosts.clear();
   cache.trendingPosts.clear();
-};
+  
+  if (slug) {
+    cache.posts.delete(slug);
+  }
+}
 
-// Helper function to check admin passphrase
-const checkAdminPassphrase = (req) => {
-  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
-};
-
-// Get all blog posts with SSR meta tags
+// Get all blog posts
 router.get('/posts', async (req, res) => {
   try {
-    // Check cache first
     const cachedPosts = cache.posts.get('all');
     if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
       return res.json(cachedPosts.data);
@@ -146,13 +135,12 @@ router.get('/posts', async (req, res) => {
        ORDER BY created_at DESC`
     );
 
-    // Add meta tags to each post
     const postsWithMeta = posts.map(post => ({
       ...post,
+      canonical_url: `https://boomlify.com/blog/${post.slug}`,
       metaTags: generateMetaTags(post)
     }));
 
-    // Cache the results
     cache.posts.set('all', {
       data: postsWithMeta,
       timestamp: Date.now()
@@ -165,10 +153,9 @@ router.get('/posts', async (req, res) => {
   }
 });
 
-// Get a single blog post by slug with SSR meta tags
+// Get a single blog post by slug
 router.get('/posts/:slug', async (req, res) => {
   try {
-    // Check cache first
     const cachedPost = cache.posts.get(req.params.slug);
     if (cachedPost && Date.now() < cachedPost.timestamp + cache.TTL) {
       return res.json(cachedPost.data);
@@ -186,10 +173,10 @@ router.get('/posts/:slug', async (req, res) => {
 
     const post = {
       ...posts[0],
+      canonical_url: `https://boomlify.com/blog/${posts[0].slug}`,
       metaTags: generateMetaTags(posts[0])
     };
 
-    // Cache the result
     cache.posts.set(req.params.slug, {
       data: post,
       timestamp: Date.now()
@@ -270,8 +257,7 @@ router.post('/posts', async (req, res) => {
       ]
     );
 
-    // Invalidate cache
-    invalidateCache();
+    invalidateRelatedCaches();
 
     res.json({ 
       message: 'Blog post created successfully',
@@ -294,30 +280,8 @@ router.put('/posts/:id', async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    const {
-      title,
-      content,
-      category,
-      meta_title,
-      meta_description,
-      keywords,
-      featured_image,
-      status,
-      author,
-      og_title,
-      og_description,
-      og_image,
-      twitter_title,
-      twitter_description,
-      twitter_image
-    } = req.body;
-
-    if (!title || !content || !category) {
-      return res.status(400).json({ error: 'Title, content and category are required' });
-    }
-
     const [existingPost] = await connection.query(
-      'SELECT id FROM blog_posts WHERE id = ?',
+      'SELECT slug FROM blog_posts WHERE id = ?',
       [req.params.id]
     );
 
@@ -325,21 +289,24 @@ router.put('/posts/:id', async (req, res) => {
       return res.status(404).json({ error: 'Blog post not found' });
     }
 
-    const slug = title
+    const oldSlug = existingPost[0].slug;
+    const newSlug = req.body.title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
 
-    const [existingSlugs] = await connection.query(
-      'SELECT id FROM blog_posts WHERE slug = ? AND id != ?',
-      [slug, req.params.id]
-    );
+    if (oldSlug !== newSlug) {
+      const [existingSlugs] = await connection.query(
+        'SELECT id FROM blog_posts WHERE slug = ? AND id != ?',
+        [newSlug, req.params.id]
+      );
 
-    if (existingSlugs.length > 0) {
-      return res.status(400).json({ error: 'A post with this title already exists' });
+      if (existingSlugs.length > 0) {
+        return res.status(400).json({ error: 'A post with this title already exists' });
+      }
     }
 
-    const sanitizedContent = DOMPurify.sanitize(content);
+    const sanitizedContent = DOMPurify.sanitize(req.body.content);
 
     await connection.query(
       `UPDATE blog_posts SET 
@@ -362,21 +329,24 @@ router.put('/posts/:id', async (req, res) => {
         updated_at = NOW()
        WHERE id = ?`,
       [
-        title, slug, sanitizedContent, category,
-        meta_title, meta_description, keywords,
-        featured_image, status, author,
-        og_title, og_description, og_image,
-        twitter_title, twitter_description, twitter_image,
+        req.body.title, newSlug, sanitizedContent, req.body.category,
+        req.body.meta_title, req.body.meta_description, req.body.keywords,
+        req.body.featured_image, req.body.status, req.body.author,
+        req.body.og_title, req.body.og_description, req.body.og_image,
+        req.body.twitter_title, req.body.twitter_description, req.body.twitter_image,
         req.params.id
       ]
     );
 
-    // Invalidate cache
-    invalidateCache(req.params.id);
+    // Invalidate both old and new slug caches
+    invalidateRelatedCaches(oldSlug);
+    if (oldSlug !== newSlug) {
+      invalidateRelatedCaches(newSlug);
+    }
 
     res.json({ 
       message: 'Blog post updated successfully',
-      slug 
+      slug: newSlug 
     });
   } catch (error) {
     console.error('Failed to update blog post:', error);
@@ -394,12 +364,12 @@ router.delete('/posts/:id', async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    const [posts] = await connection.query(
-      'SELECT id FROM blog_posts WHERE id = ?',
+    const [post] = await connection.query(
+      'SELECT slug FROM blog_posts WHERE id = ?',
       [req.params.id]
     );
 
-    if (posts.length === 0) {
+    if (post.length === 0) {
       return res.status(404).json({ error: 'Blog post not found' });
     }
 
@@ -408,8 +378,7 @@ router.delete('/posts/:id', async (req, res) => {
       [req.params.id]
     );
 
-    // Invalidate cache
-    invalidateCache(req.params.id);
+    invalidateRelatedCaches(post[0].slug);
 
     res.json({ message: 'Blog post deleted successfully' });
   } catch (error) {
@@ -423,12 +392,6 @@ router.delete('/posts/:id', async (req, res) => {
 // Get blog categories
 router.get('/categories', async (req, res) => {
   try {
-    // Check cache first
-    const cachedCategories = cache.categories.get('all');
-    if (cachedCategories && Date.now() < cachedCategories.timestamp + cache.TTL) {
-      return res.json(cachedCategories.data);
-    }
-
     const [categories] = await pool.query(
       `SELECT DISTINCT category FROM blog_posts 
        ${!checkAdminPassphrase(req) ? "WHERE status = 'published'" : ''} 
@@ -436,17 +399,54 @@ router.get('/categories', async (req, res) => {
     );
 
     const categoryList = categories.map(c => c.category);
-
-    // Cache the results
-    cache.categories.set('all', {
-      data: categoryList,
-      timestamp: Date.now()
-    });
-
     res.json(categoryList);
   } catch (error) {
     console.error('Failed to fetch categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// Get featured posts
+router.get('/posts/featured', async (req, res) => {
+  try {
+    const [posts] = await pool.query(
+      `SELECT * FROM blog_posts 
+       WHERE is_featured = true AND status = 'published'
+       ORDER BY featured_order ASC, created_at DESC`
+    );
+
+    const postsWithMeta = posts.map(post => ({
+      ...post,
+      canonical_url: `https://boomlify.com/blog/${post.slug}`,
+      metaTags: generateMetaTags(post)
+    }));
+
+    res.json(postsWithMeta);
+  } catch (error) {
+    console.error('Failed to fetch featured posts:', error);
+    res.status(500).json({ error: 'Failed to fetch featured posts' });
+  }
+});
+
+// Get trending posts
+router.get('/posts/trending', async (req, res) => {
+  try {
+    const [posts] = await pool.query(
+      `SELECT * FROM blog_posts 
+       WHERE is_trending = true AND status = 'published'
+       ORDER BY trending_order ASC, created_at DESC`
+    );
+
+    const postsWithMeta = posts.map(post => ({
+      ...post,
+      canonical_url: `https://boomlify.com/blog/${post.slug}`,
+      metaTags: generateMetaTags(post)
+    }));
+
+    res.json(postsWithMeta);
+  } catch (error) {
+    console.error('Failed to fetch trending posts:', error);
+    res.status(500).json({ error: 'Failed to fetch trending posts' });
   }
 });
 
@@ -467,8 +467,7 @@ router.patch('/posts/:id/status', async (req, res) => {
       [is_featured, is_trending, featured_order, trending_order, req.params.id]
     );
 
-    // Invalidate cache
-    invalidateCache();
+    invalidateRelatedCaches();
 
     res.json({ message: 'Post status updated successfully' });
   } catch (error) {
@@ -487,7 +486,7 @@ router.post('/posts/reorder', async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    const { posts, type } = req.body; // type can be 'featured' or 'trending'
+    const { posts, type } = req.body;
     const orderField = type === 'trending' ? 'trending_order' : 'featured_order';
 
     for (const post of posts) {
@@ -497,8 +496,7 @@ router.post('/posts/reorder', async (req, res) => {
       );
     }
 
-    // Invalidate cache
-    invalidateCache();
+    invalidateRelatedCaches();
 
     res.json({ message: 'Posts reordered successfully' });
   } catch (error) {
@@ -506,74 +504,6 @@ router.post('/posts/reorder', async (req, res) => {
     res.status(500).json({ error: 'Failed to reorder posts' });
   } finally {
     connection.release();
-  }
-});
-
-// Get featured posts
-router.get('/posts/featured', async (req, res) => {
-  try {
-    // Check cache first
-    const cachedPosts = cache.featuredPosts.get('all');
-    if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
-      return res.json(cachedPosts.data);
-    }
-
-    const [posts] = await pool.query(
-      `SELECT * FROM blog_posts 
-       WHERE is_featured = true 
-       ORDER BY featured_order ASC, created_at DESC`
-    );
-
-    // Add meta tags to each post
-    const postsWithMeta = posts.map(post => ({
-      ...post,
-      metaTags: generateMetaTags(post)
-    }));
-
-    // Cache the results
-    cache.featuredPosts.set('all', {
-      data: postsWithMeta,
-      timestamp: Date.now()
-    });
-
-    res.json(postsWithMeta);
-  } catch (error) {
-    console.error('Failed to fetch featured posts:', error);
-    res.status(500).json({ error: 'Failed to fetch featured posts' });
-  }
-});
-
-// Get trending posts
-router.get('/posts/trending', async (req, res) => {
-  try {
-    // Check cache first
-    const cachedPosts = cache.trendingPosts.get('all');
-    if (cachedPosts && Date.now() < cachedPosts.timestamp + cache.TTL) {
-      return res.json(cachedPosts.data);
-    }
-
-    const [posts] = await pool.query(
-      `SELECT * FROM blog_posts 
-       WHERE is_trending = true 
-       ORDER BY trending_order ASC, created_at DESC`
-    );
-
-    // Add meta tags to each post
-    const postsWithMeta = posts.map(post => ({
-      ...post,
-      metaTags: generateMetaTags(post)
-    }));
-
-    // Cache the results
-    cache.trendingPosts.set('all', {
-      data: postsWithMeta,
-      timestamp: Date.now()
-    });
-
-    res.json(postsWithMeta);
-  } catch (error) {
-    console.error('Failed to fetch trending posts:', error);
-    res.status(500).json({ error: 'Failed to fetch trending posts' });
   }
 });
 
