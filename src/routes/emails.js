@@ -111,7 +111,7 @@ router.post('/create', authenticateToken, rateLimitMiddleware, checkCaptchaRequi
     res.json(createdEmail[0]);
   } catch (error) {
     console.error('Create email error:', error);
-    res.status(400).json({ error: 'Email taken or invalid. Try another!' });
+    res.status(400).json({ error: 'Oops! That email is taken or invalid. Try a different one or pick another domain.' });
   }
 });
 
@@ -328,7 +328,7 @@ router.post('/public/create', rateLimitMiddleware, checkCaptchaRequired, verifyC
     res.json(createdEmail[0]);
   } catch (error) {
     console.error('Create public email error:', error);
-    res.status(400).json({ error: 'Email taken or invalid. Try another!' });
+    res.status(400).json({ error: 'Oops! That email is taken or invalid. Try a different one or pick another domain.' });
   }
 });
 
