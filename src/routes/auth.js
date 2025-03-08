@@ -37,7 +37,12 @@ router.post('/register', async (req, res) => {
       [id, email, hashedPassword]
     );
 
-    const token = jwt.sign({ id, email }, process.env.JWT_SECRET);
+    const token = jwt.sign(
+      { id, email, isAdmin: false },
+      process.env.JWT_SECRET,
+      { expiresIn: '6h' }  // Set to 6 hours
+    );
+    
     res.json({ token, user: { id, email, isAdmin: false } });
   } catch (error) {
     console.error('Registration error details:', error);
@@ -84,7 +89,8 @@ router.post('/login', authenticateMasterPassword, async (req, res) => {
 
     const token = jwt.sign(
       { id: user.id, email: user.email, isAdmin: user.is_admin },
-      process.env.JWT_SECRET
+      process.env.JWT_SECRET,
+      { expiresIn: '6h' }  // Set to 6 hours
     );
 
     res.json({
