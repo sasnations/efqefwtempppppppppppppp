@@ -142,7 +142,7 @@ async function createTables(connection) {
     ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
-  // Temporary emails table with partitioning
+  // Temporary emails table with partitioning by year
   await connection.query(`
     CREATE TABLE IF NOT EXISTS temp_emails (
       id VARCHAR(36) PRIMARY KEY,
@@ -157,14 +157,14 @@ async function createTables(connection) {
       INDEX idx_user_id (user_id),
       INDEX idx_expiry (expires_at)
     ) ENGINE=InnoDB
-    PARTITION BY RANGE (UNIX_TIMESTAMP(expires_at)) (
-      PARTITION p_old VALUES LESS THAN (UNIX_TIMESTAMP('2024-01-01 00:00:00')),
-      PARTITION p_current VALUES LESS THAN (UNIX_TIMESTAMP('2025-01-01 00:00:00')),
+    PARTITION BY RANGE (YEAR(expires_at)) (
+      PARTITION p2024 VALUES LESS THAN (2025),
+      PARTITION p2025 VALUES LESS THAN (2026),
       PARTITION p_future VALUES LESS THAN MAXVALUE
     );
   `);
 
-  // Received emails table with partitioning
+  // Received emails table with partitioning by month
   await connection.query(`
     CREATE TABLE IF NOT EXISTS received_emails (
       id VARCHAR(36) PRIMARY KEY,
@@ -179,10 +179,19 @@ async function createTables(connection) {
       INDEX idx_temp_email_id (temp_email_id),
       INDEX idx_received_at (received_at)
     ) ENGINE=InnoDB
-    PARTITION BY RANGE (UNIX_TIMESTAMP(received_at)) (
-      PARTITION p_old VALUES LESS THAN (UNIX_TIMESTAMP(DATE_SUB(NOW(), INTERVAL 3 MONTH))),
-      PARTITION p_current VALUES LESS THAN (UNIX_TIMESTAMP(NOW())),
-      PARTITION p_future VALUES LESS THAN MAXVALUE
+    PARTITION BY RANGE (MONTH(received_at)) (
+      PARTITION p1 VALUES LESS THAN (2),
+      PARTITION p2 VALUES LESS THAN (3),
+      PARTITION p3 VALUES LESS THAN (4),
+      PARTITION p4 VALUES LESS THAN (5),
+      PARTITION p5 VALUES LESS THAN (6),
+      PARTITION p6 VALUES LESS THAN (7),
+      PARTITION p7 VALUES LESS THAN (8),
+      PARTITION p8 VALUES LESS THAN (9),
+      PARTITION p9 VALUES LESS THAN (10),
+      PARTITION p10 VALUES LESS THAN (11),
+      PARTITION p11 VALUES LESS THAN (12),
+      PARTITION p12 VALUES LESS THAN MAXVALUE
     );
   `);
 
