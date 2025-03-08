@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create the pool with optimized settings
+// Create the pool with optimized settings for DigitalOcean MySQL
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
@@ -11,19 +11,21 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 220,
-  maxIdle: 50,
-  idleTimeout: 60000,
-  queueLimit: 0,
+  connectionLimit: 50, // Optimized for DigitalOcean MySQL
+  maxIdle: 10, // Keep fewer idle connections
+  idleTimeout: 30000, // Reduce idle timeout to 30 seconds
+  queueLimit: 0, // No limit on queue size
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
-  connectTimeout: 60000,
+  connectTimeout: 10000, // Reduced timeout
+  acquireTimeout: 10000, // Maximum time to acquire connection
+  multipleStatements: false, // Security: disable multiple statements
   ssl: {
     rejectUnauthorized: false
   }
 });
 
-// Add event listeners for better error handling
+// Connection monitoring and error handling
 pool.on('connection', (connection) => {
   console.log('New database connection established');
   
@@ -39,46 +41,83 @@ pool.on('connection', (connection) => {
       console.error('Database connection was refused');
     }
   });
+
+  // Monitor query execution time
+  connection.on('query', (query) => {
+    const start = Date.now();
+    connection.once('result', () => {
+      const duration = Date.now() - start;
+      if (duration > 1000) { // Log slow queries (>1s)
+        console.warn('Slow query detected:', {
+          query: query.sql,
+          duration: duration + 'ms'
+        });
+      }
+    });
+  });
 });
 
-// Check database connection health
+// Enhanced health check with connection metrics
 export async function checkDatabaseConnection() {
   try {
     const connection = await pool.getConnection();
-    await connection.query('SELECT 1');
+    
+    // Get connection stats
+    const [threadStatus] = await connection.query('SHOW STATUS LIKE "Threads_connected"');
+    const [maxConnections] = await connection.query('SHOW VARIABLES LIKE "max_connections"');
+    const [waitEvents] = await connection.query('SHOW STATUS LIKE "Threads_waiting_for_connection_count"');
+    
+    const stats = {
+      activeConnections: parseInt(threadStatus[0].Value),
+      maxAllowed: parseInt(maxConnections[0].Value),
+      waitingThreads: parseInt(waitEvents[0].Value),
+      poolSize: pool.pool.config.connectionLimit,
+      queueSize: pool.pool.waitingClientsCount()
+    };
+    
     connection.release();
-    return true;
+    
+    return {
+      healthy: true,
+      timestamp: new Date().toISOString(),
+      metrics: stats,
+      warning: stats.activeConnections > (stats.poolSize * 0.8) ? 'High connection usage' : null
+    };
   } catch (error) {
     console.error('Database health check failed:', error);
-    return false;
+    return {
+      healthy: false,
+      timestamp: new Date().toISOString(),
+      error: error.message
+    };
   }
 }
 
+// Initialize database with optimized settings
 export async function initializeDatabase() {
   try {
     console.log('Attempting to connect to database...');
-    console.log('Database host:', process.env.DB_HOST);
     
     const connection = await pool.getConnection();
     console.log('Successfully connected to database');
     
-    // Test the connection
-    await connection.query('SELECT 1');
-    
-    // Create tables
+    // Create tables with optimized settings
     await createTables(connection);
+    
+    // Add indexes for better query performance
+    await optimizeIndexes(connection);
     
     connection.release();
     console.log('Database initialized successfully');
     return pool;
   } catch (error) {
-    console.error('Error initializing database:', error);
+    console.error('Failed to initialize database:', error);
     throw error;
   }
 }
 
 async function createTables(connection) {
-  // Users table
+  // Users table with optimized settings
   await connection.query(`
     CREATE TABLE IF NOT EXISTS users (
       id VARCHAR(36) PRIMARY KEY,
@@ -90,7 +129,7 @@ async function createTables(connection) {
       last_login TIMESTAMP,
       INDEX idx_user_email (email),
       INDEX idx_google_id (google_id)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // Domains table
@@ -100,10 +139,10 @@ async function createTables(connection) {
       domain VARCHAR(255) UNIQUE NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_domain_name (domain)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
-  // Temporary emails table
+  // Temporary emails table with partitioning
   await connection.query(`
     CREATE TABLE IF NOT EXISTS temp_emails (
       id VARCHAR(36) PRIMARY KEY,
@@ -117,10 +156,15 @@ async function createTables(connection) {
       INDEX idx_temp_email (email),
       INDEX idx_user_id (user_id),
       INDEX idx_expiry (expires_at)
+    ) ENGINE=InnoDB
+    PARTITION BY RANGE (UNIX_TIMESTAMP(expires_at)) (
+      PARTITION p_old VALUES LESS THAN (UNIX_TIMESTAMP('2024-01-01 00:00:00')),
+      PARTITION p_current VALUES LESS THAN (UNIX_TIMESTAMP('2025-01-01 00:00:00')),
+      PARTITION p_future VALUES LESS THAN MAXVALUE
     );
   `);
 
-  // Received emails table
+  // Received emails table with partitioning
   await connection.query(`
     CREATE TABLE IF NOT EXISTS received_emails (
       id VARCHAR(36) PRIMARY KEY,
@@ -134,6 +178,11 @@ async function createTables(connection) {
       FOREIGN KEY (temp_email_id) REFERENCES temp_emails(id) ON DELETE CASCADE,
       INDEX idx_temp_email_id (temp_email_id),
       INDEX idx_received_at (received_at)
+    ) ENGINE=InnoDB
+    PARTITION BY RANGE (UNIX_TIMESTAMP(received_at)) (
+      PARTITION p_old VALUES LESS THAN (UNIX_TIMESTAMP(DATE_SUB(NOW(), INTERVAL 3 MONTH))),
+      PARTITION p_current VALUES LESS THAN (UNIX_TIMESTAMP(NOW())),
+      PARTITION p_future VALUES LESS THAN MAXVALUE
     );
   `);
 
@@ -249,9 +298,27 @@ async function createTables(connection) {
   `);
 }
 
+async function optimizeIndexes(connection) {
+  // Add composite indexes for common queries
+  await connection.query(`
+    ALTER TABLE temp_emails 
+    ADD INDEX idx_user_expiry (user_id, expires_at),
+    ADD INDEX idx_domain_expiry (domain_id, expires_at);
+  `);
+
+  await connection.query(`
+    ALTER TABLE received_emails
+    ADD INDEX idx_email_received (temp_email_id, received_at),
+    ADD INDEX idx_from_received (from_email, received_at);
+  `);
+}
+
 // Cleanup function
 async function cleanup() {
   try {
+    const stats = await checkDatabaseConnection();
+    console.log('Connection stats before cleanup:', stats);
+    
     await pool.end();
     console.log('All database connections closed');
   } catch (err) {
