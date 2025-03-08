@@ -11,8 +11,8 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 50, // Optimized for DigitalOcean MySQL
-  maxIdle: 10, // Keep fewer idle connections
+  connectionLimit: 150, // Optimized for DigitalOcean MySQL
+  maxIdle: 50, // Keep fewer idle connections
   idleTimeout: 30000, // Reduce idle timeout to 30 seconds
   queueLimit: 0, // No limit on queue size
   enableKeepAlive: true,
