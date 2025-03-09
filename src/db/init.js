@@ -93,25 +93,25 @@ export async function checkDatabaseConnection() {
   }
 }
 
-// Initialize database with optimized settings
 export async function initializeDatabase() {
   try {
     console.log('Attempting to connect to database...');
+    console.log('Database host:', process.env.DB_HOST);
     
     const connection = await pool.getConnection();
     console.log('Successfully connected to database');
     
-    // Create tables with optimized settings
-    await createTables(connection);
+    // Test the connection
+    await connection.query('SELECT 1');
     
-    // Add indexes for better query performance
-    await optimizeIndexes(connection);
+    // Create tables
+    await createTables(connection);
     
     connection.release();
     console.log('Database initialized successfully');
     return pool;
   } catch (error) {
-    console.error('Failed to initialize database:', error);
+    console.error('Error initializing database:', error);
     throw error;
   }
 }
@@ -155,7 +155,9 @@ async function createTables(connection) {
       FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
       INDEX idx_temp_email (email),
       INDEX idx_user_id (user_id),
-      INDEX idx_expiry (expires_at)
+      INDEX idx_expiry (expires_at),
+      INDEX idx_user_expiry (user_id, expires_at),
+      INDEX idx_domain_expiry (domain_id, expires_at)
     ) ENGINE=InnoDB
     PARTITION BY RANGE (YEAR(expires_at)) (
       PARTITION p2024 VALUES LESS THAN (2025),
@@ -177,7 +179,9 @@ async function createTables(connection) {
       received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (temp_email_id) REFERENCES temp_emails(id) ON DELETE CASCADE,
       INDEX idx_temp_email_id (temp_email_id),
-      INDEX idx_received_at (received_at)
+      INDEX idx_received_at (received_at),
+      INDEX idx_email_received (temp_email_id, received_at),
+      INDEX idx_from_received (from_email, received_at)
     ) ENGINE=InnoDB
     PARTITION BY RANGE (MONTH(received_at)) (
       PARTITION p1 VALUES LESS THAN (2),
@@ -208,7 +212,7 @@ async function createTables(connection) {
       FOREIGN KEY (email_id) REFERENCES received_emails(id) ON DELETE CASCADE,
       INDEX idx_email_id (email_id),
       INDEX idx_attachment_filename (filename)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // Custom messages table
@@ -223,7 +227,7 @@ async function createTables(connection) {
       FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
       INDEX idx_active_messages (is_active),
       INDEX idx_created_at (created_at)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // User dismissed messages table
@@ -236,7 +240,7 @@ async function createTables(connection) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES custom_messages(id) ON DELETE CASCADE,
       INDEX idx_user_dismissals (user_id, dismissed_at)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // Blog posts table
@@ -255,11 +259,17 @@ async function createTables(connection) {
       author_email VARCHAR(255),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      is_featured BOOLEAN DEFAULT FALSE,
+      is_trending BOOLEAN DEFAULT FALSE,
+      featured_order INT,
+      trending_order INT,
       INDEX idx_slug (slug),
       INDEX idx_category (category),
       INDEX idx_status (status),
-      INDEX idx_created_at (created_at)
-    );
+      INDEX idx_created_at (created_at),
+      INDEX idx_featured (is_featured, featured_order),
+      INDEX idx_trending (is_trending, trending_order)
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // Blog images table
@@ -276,7 +286,7 @@ async function createTables(connection) {
       FOREIGN KEY (post_id) REFERENCES blog_posts(id) ON DELETE CASCADE,
       INDEX idx_post_id (post_id),
       INDEX idx_is_featured (is_featured)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 
   // Request logs table for IP and Request ID tracking
@@ -303,26 +313,11 @@ async function createTables(connection) {
       INDEX idx_created_at (created_at),
       INDEX idx_path (request_path),
       INDEX idx_user_id (user_id)
-    );
+    ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
   `);
 }
 
-async function optimizeIndexes(connection) {
-  // Add composite indexes for common queries
-  await connection.query(`
-    ALTER TABLE temp_emails 
-    ADD INDEX idx_user_expiry (user_id, expires_at),
-    ADD INDEX idx_domain_expiry (domain_id, expires_at);
-  `);
-
-  await connection.query(`
-    ALTER TABLE received_emails
-    ADD INDEX idx_email_received (temp_email_id, received_at),
-    ADD INDEX idx_from_received (from_email, received_at);
-  `);
-}
-
-// Cleanup function
+// Cleanup function with stats logging
 async function cleanup() {
   try {
     const stats = await checkDatabaseConnection();
