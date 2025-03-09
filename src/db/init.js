@@ -6,7 +6,7 @@ dotenv.config();
 // Create the pool with optimized settings for DigitalOcean MySQL
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT || 3306,
+  port: process.env.DB_PORT || 25060, // DigitalOcean's default MySQL port
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
@@ -17,11 +17,10 @@ const pool = mysql.createPool({
   queueLimit: 0, // No limit on queue size
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
-  connectTimeout: 10000, // Reduced timeout
-  acquireTimeout: 10000, // Maximum time to acquire connection
-  multipleStatements: false, // Security: disable multiple statements
+  connectTimeout: 10000, // Connection timeout in milliseconds
   ssl: {
-    rejectUnauthorized: false
+    // For DigitalOcean Managed MySQL
+    rejectUnauthorized: false // Required for DigitalOcean's self-signed certificates
   }
 });
 
@@ -56,6 +55,8 @@ pool.on('connection', (connection) => {
     });
   });
 });
+
+
 
 // Enhanced health check with connection metrics
 export async function checkDatabaseConnection() {
