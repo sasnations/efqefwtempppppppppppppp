@@ -3,37 +3,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
 import { JSDOM } from 'jsdom';
 import createDOMPurify from 'dompurify';
-import { BlogContentGenerator } from '../services/blogContentGenerator.js';
-import { ContentScheduler } from '../services/contentScheduler.js';
 import rateLimit from 'express-rate-limit';
 
 const router = express.Router();
-const contentGenerator = new BlogContentGenerator();
-const contentScheduler = new ContentScheduler();
-
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: { error: 'Too many requests, please try again later' }
-});
-
-// Apply rate limiting to all routes
-router.use(limiter);
 
 // Initialize DOMPurify with custom config
 const window = new JSDOM('').window;
 const DOMPurify = createDOMPurify(window);
-
-// Configure DOMPurify to allow iframes from trusted sources
-DOMPurify.setConfig({
-  ADD_TAGS: ['iframe'],
-  ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'src', 'title', 'width', 'height'],
-  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-  ALLOWED_TAGS: [
-    'a', 'b', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'i', 'iframe', 'img', 'li', 'ol', 'p', 'span', 'strong', 'ul'
-  ]
-});
 
 // Simple in-memory cache implementation
 const cache = {
@@ -96,7 +72,7 @@ function generateMetaTags(post) {
     
     <!-- Structured Data -->
     <script type="application/ld+json">
-      ${JSON.stringify(post.structured_data || {
+      ${JSON.stringify({
         "@context": "https://schema.org",
         "@type": "BlogPosting",
         "headline": post.title,
@@ -115,7 +91,14 @@ function generateMetaTags(post) {
           }
         },
         "datePublished": post.created_at,
-        "dateModified": post.updated_at
+        "dateModified": post.updated_at,
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": post.canonical_url
+        },
+        "keywords": post.keywords,
+        "articleBody": post.content.replace(/<[^>]*>/g, ''),
+        "wordCount": post.content.split(/\s+/).length
       })}
     </script>
   `;
@@ -125,6 +108,19 @@ function generateMetaTags(post) {
 const isValidYouTubeUrl = (url) => {
   return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
 };
+
+// Configure DOMPurify to allow iframes from trusted sources
+DOMPurify.setConfig({
+  ADD_TAGS: ['iframe'],
+  ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'src', 'title', 'width', 'height'],
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_TAGS: [
+    'a', 'b', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'i', 'iframe', 'img', 'li', 'ol', 'p', 'span', 'strong', 'ul',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'blockquote', 'code',
+    'pre', 'hr', 'figure', 'figcaption'
+  ]
+});
 
 // Function to invalidate cache for a specific post
 const invalidateCache = (postId = null) => {
@@ -144,21 +140,14 @@ const checkAdminPassphrase = (req) => {
   return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
 };
 
-// Start content scheduler
-const startScheduler = async () => {
-  try {
-    await contentScheduler.executeSchedule();
-    // Run scheduler every 24 hours
-    setInterval(() => contentScheduler.executeSchedule(), 24 * 60 * 60 * 1000);
-  } catch (error) {
-    console.error('Failed to start content scheduler:', error);
-  }
-};
-
-startScheduler();
+// Rate limiter for public endpoints
+const publicRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
 
 // Get all blog posts with SSR meta tags
-router.get('/posts', async (req, res) => {
+router.get('/posts', publicRateLimit, async (req, res) => {
   try {
     // Check cache first
     const cachedPosts = cache.posts.get('all');
@@ -175,7 +164,10 @@ router.get('/posts', async (req, res) => {
     // Add meta tags to each post
     const postsWithMeta = posts.map(post => ({
       ...post,
-      metaTags: generateMetaTags(post)
+      metaTags: generateMetaTags({
+        ...post,
+        canonical_url: `https://boomlify.com/blog/${post.slug}`
+      })
     }));
 
     // Cache the results
@@ -192,7 +184,7 @@ router.get('/posts', async (req, res) => {
 });
 
 // Get a single blog post by slug with SSR meta tags
-router.get('/posts/:slug', async (req, res) => {
+router.get('/posts/:slug', publicRateLimit, async (req, res) => {
   try {
     // Check cache first
     const cachedPost = cache.posts.get(req.params.slug);
@@ -212,7 +204,10 @@ router.get('/posts/:slug', async (req, res) => {
 
     const post = {
       ...posts[0],
-      metaTags: generateMetaTags(posts[0])
+      metaTags: generateMetaTags({
+        ...posts[0],
+        canonical_url: `https://boomlify.com/blog/${posts[0].slug}`
+      })
     };
 
     // Cache the result
@@ -228,7 +223,7 @@ router.get('/posts/:slug', async (req, res) => {
   }
 });
 
-// Create a new blog post with auto-generation option
+// Create a new blog post
 router.post('/posts', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -255,30 +250,14 @@ router.post('/posts', async (req, res) => {
       og_image,
       twitter_title,
       twitter_description,
-      twitter_image,
-      auto_generate = false // New option for auto-generation
+      twitter_image
     } = req.body;
 
-    let postData;
-
-    if (auto_generate) {
-      // Generate content using AI
-      postData = await contentGenerator.generatePost({
-        topic: title || category,
-        type: 'article',
-        wordCount: 1500,
-        tone: 'professional',
-        keywords: keywords ? keywords.split(',') : []
-      });
-    } else {
-      // Use provided content
-      if (!title || !content || !category) {
-        return res.status(400).json({ error: 'Title, content and category are required' });
-      }
-      postData = { title, content, category, ...req.body };
+    if (!title || !content || !category) {
+      return res.status(400).json({ error: 'Title, content and category are required' });
     }
 
-    const slug = postData.title
+    const slug = title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '');
@@ -292,7 +271,7 @@ router.post('/posts', async (req, res) => {
       return res.status(400).json({ error: 'A post with this title already exists' });
     }
 
-    const sanitizedContent = DOMPurify.sanitize(postData.content);
+    const sanitizedContent = DOMPurify.sanitize(content);
 
     const id = uuidv4();
     await connection.query(
@@ -304,7 +283,7 @@ router.post('/posts', async (req, res) => {
         og_image, twitter_title, twitter_description, twitter_image
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        id, postData.title, slug, sanitizedContent, postData.category, meta_title,
+        id, title, slug, sanitizedContent, category, meta_title,
         meta_description, keywords, featured_image, status,
         author, is_featured, is_trending, featured_order, trending_order,
         og_title, og_description, og_image, twitter_title,
@@ -312,11 +291,8 @@ router.post('/posts', async (req, res) => {
       ]
     );
 
-    // Clear cache
-    cache.posts.clear();
-    cache.categories.clear();
-    cache.featuredPosts.clear();
-    cache.trendingPosts.clear();
+    // Invalidate cache
+    invalidateCache();
 
     res.json({ 
       message: 'Blog post created successfully',
@@ -416,11 +392,8 @@ router.put('/posts/:id', async (req, res) => {
       ]
     );
 
-    // Clear cache
-    cache.posts.clear();
-    cache.categories.clear();
-    cache.featuredPosts.clear();
-    cache.trendingPosts.clear();
+    // Invalidate cache
+    invalidateCache(req.params.id);
 
     res.json({ 
       message: 'Blog post updated successfully',
@@ -456,11 +429,8 @@ router.delete('/posts/:id', async (req, res) => {
       [req.params.id]
     );
 
-    // Clear cache
-    cache.posts.clear();
-    cache.categories.clear();
-    cache.featuredPosts.clear();
-    cache.trendingPosts.clear();
+    // Invalidate cache
+    invalidateCache(req.params.id);
 
     res.json({ message: 'Blog post deleted successfully' });
   } catch (error) {
@@ -472,7 +442,7 @@ router.delete('/posts/:id', async (req, res) => {
 });
 
 // Get blog categories
-router.get('/categories', async (req, res) => {
+router.get('/categories', publicRateLimit, async (req, res) => {
   try {
     // Check cache first
     const cachedCategories = cache.categories.get('all');
@@ -518,10 +488,8 @@ router.patch('/posts/:id/status', async (req, res) => {
       [is_featured, is_trending, featured_order, trending_order, req.params.id]
     );
 
-    // Clear cache
-    cache.posts.clear();
-    cache.featuredPosts.clear();
-    cache.trendingPosts.clear();
+    // Invalidate cache
+    invalidateCache();
 
     res.json({ message: 'Post status updated successfully' });
   } catch (error) {
@@ -540,7 +508,7 @@ router.post('/posts/reorder', async (req, res) => {
 
   const connection = await pool.getConnection();
   try {
-    const { posts, type } = req.body;
+    const { posts, type } = req.body; // type can be 'featured' or 'trending'
     const orderField = type === 'trending' ? 'trending_order' : 'featured_order';
 
     for (const post of posts) {
@@ -550,10 +518,8 @@ router.post('/posts/reorder', async (req, res) => {
       );
     }
 
-    // Clear cache
-    cache.posts.clear();
-    cache.featuredPosts.clear();
-    cache.trendingPosts.clear();
+    // Invalidate cache
+    invalidateCache();
 
     res.json({ message: 'Posts reordered successfully' });
   } catch (error) {
@@ -565,7 +531,7 @@ router.post('/posts/reorder', async (req, res) => {
 });
 
 // Get featured posts
-router.get('/posts/featured', async (req, res) => {
+router.get('/posts/featured', publicRateLimit, async (req, res) => {
   try {
     // Check cache first
     const cachedPosts = cache.featuredPosts.get('all');
@@ -575,14 +541,17 @@ router.get('/posts/featured', async (req, res) => {
 
     const [posts] = await pool.query(
       `SELECT * FROM blog_posts 
-       WHERE is_featured = true 
+       WHERE is_featured = true AND status = 'published'
        ORDER BY featured_order ASC, created_at DESC`
     );
 
     // Add meta tags to each post
     const postsWithMeta = posts.map(post => ({
       ...post,
-      metaTags: generateMetaTags(post)
+      metaTags: generateMetaTags({
+        ...post,
+        canonical_url: `https://boomlify.com/blog/${post.slug}`
+      })
     }));
 
     // Cache the results
@@ -599,7 +568,7 @@ router.get('/posts/featured', async (req, res) => {
 });
 
 // Get trending posts
-router.get('/posts/trending', async (req, res) => {
+router.get('/posts/trending', publicRateLimit, async (req, res) => {
   try {
     // Check cache first
     const cachedPosts = cache.trendingPosts.get('all');
@@ -609,14 +578,17 @@ router.get('/posts/trending', async (req, res) => {
 
     const [posts] = await pool.query(
       `SELECT * FROM blog_posts 
-       WHERE is_trending = true 
+       WHERE is_trending = true AND status = 'published'
        ORDER BY trending_order ASC, created_at DESC`
     );
 
     // Add meta tags to each post
     const postsWithMeta = posts.map(post => ({
       ...post,
-      metaTags: generateMetaTags(post)
+      metaTags: generateMetaTags({
+        ...post,
+        canonical_url: `https://boomlify.com/blog/${post.slug}`
+      })
     }));
 
     // Cache the results
