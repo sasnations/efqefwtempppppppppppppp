@@ -1,7 +1,5 @@
 import express from 'express';
 import { pool } from '../db/init.js';
-import { authenticateToken, requireAdmin } from '../middleware/auth.js';
-import { v4 as uuidv4 } from 'uuid';
 import {
   lookupRequestById,
   lookupRequestsByIp,
@@ -115,6 +113,30 @@ router.get('/recent-users', async (req, res) => {
   }
 });
 
+// Get user activity
+router.get('/user-activity', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const [activity] = await pool.query(
+      `SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as registrations,
+        COUNT(DISTINCT user_id) as active_users
+      FROM users
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC`
+    );
+    res.json(activity);
+  } catch (error) {
+    console.error('Failed to fetch user activity:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity' });
+  }
+});
+
 // Get top users by email count
 router.get('/top-users', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
@@ -187,6 +209,8 @@ router.get('/lookup-temp-email', async (req, res) => {
   }
 });
 
+// NEW API ENDPOINTS FOR IP AND REQUEST TRACKING
+
 // Get recent IPs
 router.get('/recent-ips', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
@@ -227,12 +251,12 @@ router.get('/lookup-ip', async (req, res) => {
     const userDetails = [];
     if (ipStats.associatedUsers && ipStats.associatedUsers.length > 0) {
       const placeholders = ipStats.associatedUsers.map(() => '?').join(',');
-      const [users] = await pool.query(
-        `SELECT id, email, created_at, last_login 
-         FROM users
-         WHERE id IN (${placeholders})`,
-        ipStats.associatedUsers
-      );
+const [users] = await pool.query(
+  `SELECT id, email, created_at, last_login 
+   FROM users
+   WHERE id IN (${placeholders})`,
+  ipStats.associatedUsers
+);
       
       for (const user of users) {
         const [emailCount] = await pool.query(
@@ -309,94 +333,84 @@ router.get('/lookup-request', async (req, res) => {
   }
 });
 
-// Get IP behavior stats
-router.get('/ip-behavior/:ip', async (req, res) => {
+// Get request statistics
+router.get('/request-stats', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
   try {
-    const { ip } = req.params;
+    // Get hourly request counts for the last 24 hours
+    const [hourlyStats] = await pool.query(`
+      SELECT 
+        DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00') as hour,
+        COUNT(*) as count
+      FROM request_logs
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      GROUP BY hour
+      ORDER BY hour DESC
+    `);
     
-    // Get behavior stats
-    const [behaviors] = await pool.query(
-      `SELECT * FROM ip_behaviors 
-       WHERE ip_address = ? 
-       ORDER BY detected_at DESC`,
-      [ip]
-    );
-
-    // Get request patterns
-    const [patterns] = await pool.query(
-      `SELECT 
-         DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00') as hour,
-         COUNT(*) as request_count,
-         AVG(response_time) as avg_response_time,
-         COUNT(DISTINCT user_id) as unique_users,
-         SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_count
-       FROM request_logs
-       WHERE client_ip = ?
-       GROUP BY hour
-       ORDER BY hour DESC
-       LIMIT 24`,
-      [ip]
-    );
-
-    // Get blocked status
-    const [blockStatus] = await pool.query(
-      `SELECT * FROM blocked_ips 
-       WHERE ip_address = ? 
-       AND (expires_at IS NULL OR expires_at > NOW())`,
-      [ip]
-    );
-
+    // Get top paths
+    const [topPaths] = await pool.query(`
+      SELECT request_path, COUNT(*) as count
+      FROM request_logs
+      GROUP BY request_path
+      ORDER BY count DESC
+      LIMIT 20
+    `);
+    
+    // Get response time stats
+    const [responseTimeStats] = await pool.query(`
+      SELECT 
+        MIN(response_time) as min,
+        MAX(response_time) as max,
+        AVG(response_time) as avg,
+        COUNT(*) as total
+      FROM request_logs
+    `);
+    
+    // Get error rate
+    const [errorRateStats] = await pool.query(`
+      SELECT 
+        SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success,
+        SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END) as client_error,
+        SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END) as server_error,
+        COUNT(*) as total
+      FROM request_logs
+    `);
+    
+    // Get geographic distribution
+    const [geoStats] = await pool.query(`
+      SELECT geo_country, COUNT(*) as count
+      FROM request_logs
+      WHERE geo_country != ''
+      GROUP BY geo_country
+      ORDER BY count DESC
+      LIMIT 20
+    `);
+    
+    // Get bot vs human ratio
+    const [botStats] = await pool.query(`
+      SELECT is_bot, COUNT(*) as count
+      FROM request_logs
+      GROUP BY is_bot
+    `);
+    
     res.json({
-      behaviors,
-      patterns,
-      isBlocked: blockStatus.length > 0,
-      blockInfo: blockStatus[0] || null
+      hourlyStats,
+      topPaths,
+      responseTimeStats: responseTimeStats[0],
+      errorRateStats: errorRateStats[0],
+      geoStats,
+      botStats: {
+        bots: botStats.find(stat => stat.is_bot === 1)?.count || 0,
+        humans: botStats.find(stat => stat.is_bot === 0)?.count || 0
+      }
     });
   } catch (error) {
-    console.error('Failed to get IP behavior:', error);
-    res.status(500).json({ error: 'Failed to get IP behavior' });
-  }
-});
-
-// Block IP
-router.post('/block-ip', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { ip, reason, duration } = req.body;
-    
-    const expiresAt = duration ? new Date(Date.now() + duration * 1000) : null;
-    
-    await pool.query(
-      `INSERT INTO blocked_ips (ip_address, reason, blocked_by, expires_at)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE 
-         reason = VALUES(reason),
-         blocked_by = VALUES(blocked_by),
-         expires_at = VALUES(expires_at),
-         updated_at = CURRENT_TIMESTAMP`,
-      [ip, reason, req.user.id, expiresAt]
-    );
-
-    res.json({ message: 'IP blocked successfully' });
-  } catch (error) {
-    console.error('Failed to block IP:', error);
-    res.status(500).json({ error: 'Failed to block IP' });
-  }
-});
-
-// Unblock IP
-router.post('/unblock-ip', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { ip } = req.body;
-    
-    await pool.query(
-      'DELETE FROM blocked_ips WHERE ip_address = ?',
-      [ip]
-    );
-
-    res.json({ message: 'IP unblocked successfully' });
-  } catch (error) {
-    console.error('Failed to unblock IP:', error);
-    res.status(500).json({ error: 'Failed to unblock IP' });
+    console.error('Failed to fetch request stats:', error);
+    res.status(500).json({ error: 'Failed to fetch request statistics' });
   }
 });
 
