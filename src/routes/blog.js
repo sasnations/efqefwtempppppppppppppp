@@ -1,4 +1,3 @@
-// Import required modules
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db/init.js';
@@ -6,16 +5,37 @@ import { JSDOM } from 'jsdom';
 import createDOMPurify from 'dompurify';
 import { BlogContentGenerator } from '../services/blogContentGenerator.js';
 import { ContentScheduler } from '../services/contentScheduler.js';
+import rateLimit from 'express-rate-limit';
 
 const router = express.Router();
 const contentGenerator = new BlogContentGenerator();
 const contentScheduler = new ContentScheduler();
 
-// Initialize DOMPurify
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: { error: 'Too many requests, please try again later' }
+});
+
+// Apply rate limiting to all routes
+router.use(limiter);
+
+// Initialize DOMPurify with custom config
 const window = new JSDOM('').window;
 const DOMPurify = createDOMPurify(window);
 
-// Simple in-memory cache
+// Configure DOMPurify to allow iframes from trusted sources
+DOMPurify.setConfig({
+  ADD_TAGS: ['iframe'],
+  ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling', 'src', 'title', 'width', 'height'],
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|xxx):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_TAGS: [
+    'a', 'b', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'i', 'iframe', 'img', 'li', 'ol', 'p', 'span', 'strong', 'ul'
+  ]
+});
+
+// Simple in-memory cache implementation
 const cache = {
   posts: new Map(),
   categories: new Map(),
@@ -37,7 +57,17 @@ setInterval(() => {
       cache.categories.delete(key);
     }
   }
-}, 60000);
+  for (const [key, value] of cache.featuredPosts.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.featuredPosts.delete(key);
+    }
+  }
+  for (const [key, value] of cache.trendingPosts.entries()) {
+    if (now > value.timestamp + cache.TTL) {
+      cache.trendingPosts.delete(key);
+    }
+  }
+}, 60000); // Clean up every minute
 
 // Function to generate meta tags HTML
 function generateMetaTags(post) {
@@ -90,6 +120,29 @@ function generateMetaTags(post) {
     </script>
   `;
 }
+
+// Function to validate YouTube URLs
+const isValidYouTubeUrl = (url) => {
+  return url.match(/^https?:\/\/(www\.)?youtube\.com\/embed\/[a-zA-Z0-9_-]+/);
+};
+
+// Function to invalidate cache for a specific post
+const invalidateCache = (postId = null) => {
+  if (postId) {
+    cache.posts.delete(postId);
+    cache.posts.delete('all');
+  } else {
+    cache.posts.clear();
+  }
+  cache.categories.clear();
+  cache.featuredPosts.clear();
+  cache.trendingPosts.clear();
+};
+
+// Helper function to check admin passphrase
+const checkAdminPassphrase = (req) => {
+  return req.headers['admin-access'] === process.env.ADMIN_PASSPHRASE;
+};
 
 // Start content scheduler
 const startScheduler = async () => {
@@ -251,8 +304,8 @@ router.post('/posts', async (req, res) => {
         og_image, twitter_title, twitter_description, twitter_image
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        id, postData.title, slug, sanitizedContent, postData.category, postData.meta_title,
-        postData.meta_description, postData.keywords, postData.featured_image, status,
+        id, postData.title, slug, sanitizedContent, postData.category, meta_title,
+        meta_description, keywords, featured_image, status,
         author, is_featured, is_trending, featured_order, trending_order,
         og_title, og_description, og_image, twitter_title,
         twitter_description, twitter_image
