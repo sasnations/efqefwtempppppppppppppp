@@ -3,24 +3,34 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create the pool with optimized settings for DigitalOcean MySQL
+// Create the pool with optimized settings for high concurrency
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT || 25060, // DigitalOcean's default MySQL port
+  port: process.env.DB_PORT || 25060,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 150, // Optimized for DigitalOcean MySQL
-  maxIdle: 50, // Keep fewer idle connections
-  idleTimeout: 30000, // Reduce idle timeout to 30 seconds
-  queueLimit: 0, // No limit on queue size
+  
+  // Connection pool settings
+  connectionLimit: 150,      // Keep within DO's 220 limit
+  maxIdle: 50,              // Limit idle connections
+  idleTimeout: 20000,       // Release idle connections faster (20s)
+  queueLimit: 10000,        // Allow request queuing
+  waitForConnections: true, // Queue requests when no connections available
+  
+  // Performance settings
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
-  connectTimeout: 10000, // Connection timeout in milliseconds
+  acquireTimeout: 60000,    // 60s timeout for connection acquisition
+  connectTimeout: 30000,    // 30s connection timeout
+  
+  // Query settings
+  namedPlaceholders: true,  // Better query performance
+  dateStrings: true,        // Avoid timezone issues
+  
+  // SSL settings for DO
   ssl: {
-    // For DigitalOcean Managed MySQL
-    rejectUnauthorized: false // Required for DigitalOcean's self-signed certificates
+    rejectUnauthorized: false
   }
 });
 
@@ -55,8 +65,6 @@ pool.on('connection', (connection) => {
     });
   });
 });
-
-
 
 // Enhanced health check with connection metrics
 export async function checkDatabaseConnection() {
@@ -94,6 +102,7 @@ export async function checkDatabaseConnection() {
   }
 }
 
+// Initialize database with optimized settings
 export async function initializeDatabase() {
   try {
     console.log('Attempting to connect to database...');
@@ -105,7 +114,7 @@ export async function initializeDatabase() {
     // Test the connection
     await connection.query('SELECT 1');
     
-    // Create tables
+    // Create tables with optimized settings
     await createTables(connection);
     
     connection.release();
