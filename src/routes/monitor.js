@@ -6,6 +6,7 @@ import {
   getIpStats,
   getRecentIps
 } from '../middleware/requestTracker.js';
+import { manualCleanup } from '../utils/cleanup.js';
 
 const router = express.Router();
 
@@ -89,6 +90,25 @@ router.get('/stats', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch statistics' });
   } finally {
     connection.release();
+  }
+});
+
+// Manual cleanup endpoint
+router.post('/cleanup', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const days = parseInt(req.query.days) || 10;
+    const result = await manualCleanup(days);
+    res.json({
+      message: 'Manual cleanup completed successfully',
+      ...result
+    });
+  } catch (error) {
+    console.error('Failed to perform manual cleanup:', error);
+    res.status(500).json({ error: 'Failed to perform cleanup' });
   }
 });
 
@@ -413,8 +433,6 @@ router.get('/request-stats', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch request statistics' });
   }
 });
-
-// In routes/monitor.js
 
 // Get IP behaviors
 router.get('/ip-behaviors', async (req, res) => {
