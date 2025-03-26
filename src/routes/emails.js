@@ -4,6 +4,7 @@ import { authenticateToken } from '../middleware/auth.js';
 import { pool } from '../db/init.js';
 import compression from 'compression';
 import { rateLimitMiddleware, verifyCaptcha, checkCaptchaRequired, rateLimitStore } from '../middleware/rateLimit.js';
+import nodemailer from 'nodemailer';
 
 const router = express.Router();
 
@@ -375,6 +376,66 @@ router.get('/admin/all', async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch admin emails:', error);
     res.status(500).json({ error: 'Failed to fetch emails' });
+  }
+});
+
+// Admin route to send bulk emails
+router.post('/admin/bulk-send', async (req, res) => {
+  // Check admin passphrase
+  const adminAccess = req.headers['admin-access'];
+  if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { userIds, email, smtp } = req.body;
+
+  if (!userIds?.length || !email?.subject || !email?.body || !smtp) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  try {
+    // Create transporter with provided SMTP settings
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: false, // true for 465, false for other ports
+      auth: {
+        user: smtp.username,
+        pass: smtp.password
+      }
+    });
+
+    // Get users' emails
+    const [users] = await pool.query(
+      'SELECT email FROM users WHERE id IN (?)',
+      [userIds]
+    );
+
+    // Send emails
+    const results = await Promise.allSettled(
+      users.map(user => 
+        transporter.sendMail({
+          from: `"${smtp.from_name}" <${smtp.from_email}>`,
+          to: user.email,
+          subject: email.subject,
+          html: email.body
+        })
+      )
+    );
+
+    // Count successes and failures
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+
+    res.json({
+      message: `Sent ${succeeded} emails successfully, ${failed} failed`,
+      succeeded,
+      failed
+    });
+
+  } catch (error) {
+    console.error('Failed to send bulk emails:', error);
+    res.status(500).json({ error: 'Failed to send emails' });
   }
 });
 
