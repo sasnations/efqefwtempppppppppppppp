@@ -93,7 +93,7 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// Manual cleanup endpoint
+// Manual cleanup endpoint (Updated with explicit fields and message from below code)
 router.post('/cleanup', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -103,11 +103,12 @@ router.post('/cleanup', async (req, res) => {
     const days = parseInt(req.query.days) || 10;
     const result = await manualCleanup(days);
     res.json({
-      message: 'Manual cleanup completed successfully',
-      ...result
+      message: 'Cleanup completed successfully',
+      deletedEmails: result.deletedEmails,
+      deletedAttachments: result.deletedAttachments
     });
   } catch (error) {
-    console.error('Failed to perform manual cleanup:', error);
+    console.error('Failed to perform cleanup:', error);
     res.status(500).json({ error: 'Failed to perform cleanup' });
   }
 });
