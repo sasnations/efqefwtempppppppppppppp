@@ -379,7 +379,124 @@ router.get('/admin/all', async (req, res) => {
   }
 });
 
-// Admin route to send bulk emails
+// Get all users with advanced filtering (admin-only)
+router.get('/admin/users', async (req, res) => {
+  try {
+    const adminAccess = req.headers['admin-access'];
+    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const {
+      search,
+      sortBy = 'created_at',
+      sortOrder = 'desc',
+      page = 1,
+      limit = 50,
+      emailCountMin,
+      emailCountMax,
+      dateStart,
+      dateEnd,
+      isActive,
+      hasCustomDomain
+    } = req.query;
+
+    let query = `
+      SELECT 
+        u.id,
+        u.email,
+        u.created_at,
+        u.last_login,
+        u.last_activity_at,
+        COUNT(DISTINCT te.id) as email_count,
+        COUNT(DISTINCT cd.id) as custom_domain_count,
+        (
+          SELECT COUNT(*)
+          FROM received_emails re
+          JOIN temp_emails te2 ON re.temp_email_id = te2.id
+          WHERE te2.user_id = u.id
+        ) as received_email_count
+      FROM users u
+      LEFT JOIN temp_emails te ON u.id = te.user_id
+      LEFT JOIN user_domains cd ON u.id = cd.user_id
+      WHERE 1=1
+    `;
+
+    const queryParams = [];
+
+    // Apply filters
+    if (search) {
+      query += ` AND u.email LIKE ?`;
+      queryParams.push(`%${search}%`);
+    }
+
+    if (emailCountMin) {
+      query += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) >= ?`;
+      queryParams.push(parseInt(emailCountMin));
+    }
+
+    if (emailCountMax) {
+      query += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) <= ?`;
+      queryParams.push(parseInt(emailCountMax));
+    }
+
+    if (dateStart) {
+      query += ` AND u.created_at >= ?`;
+      queryParams.push(dateStart);
+    }
+
+    if (dateEnd) {
+      query += ` AND u.created_at <= ?`;
+      queryParams.push(dateEnd);
+    }
+
+    if (isActive === 'true') {
+      query += ` AND u.last_activity_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    } else if (isActive === 'false') {
+      query += ` AND (u.last_activity_at IS NULL OR u.last_activity_at < DATE_SUB(NOW(), INTERVAL 7 DAY))`;
+    }
+
+    if (hasCustomDomain === 'true') {
+      query += ` AND EXISTS (SELECT 1 FROM user_domains WHERE user_id = u.id)`;
+    } else if (hasCustomDomain === 'false') {
+      query += ` AND NOT EXISTS (SELECT 1 FROM user_domains WHERE user_id = u.id)`;
+    }
+
+    // Group by user
+    query += ` GROUP BY u.id`;
+
+    // Apply sorting
+    query += ` ORDER BY ${sortBy} ${sortOrder.toUpperCase()}`;
+
+    // Add pagination
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    query += ` LIMIT ? OFFSET ?`;
+    queryParams.push(parseInt(limit), offset);
+
+    // Get total count for pagination
+    const countQuery = query.replace(/SELECT .* FROM/, 'SELECT COUNT(DISTINCT u.id) as total FROM');
+    const [countResult] = await pool.query(countQuery, queryParams);
+    const total = countResult[0].total;
+
+    // Execute main query
+    const [users] = await pool.query(query, queryParams);
+
+    res.json({
+      data: users,
+      metadata: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Admin route to send bulk emails (updated with detailed implementation)
 router.post('/admin/bulk-send', async (req, res) => {
   // Check admin passphrase
   const adminAccess = req.headers['admin-access'];
@@ -394,16 +511,31 @@ router.post('/admin/bulk-send', async (req, res) => {
   }
 
   try {
+    console.log('Creating transporter with SMTP settings:', {
+      host: smtp.host,
+      port: smtp.port,
+      auth: {
+        user: smtp.username
+      }
+    });
+
     // Create transporter with provided SMTP settings
     const transporter = nodemailer.createTransport({
       host: smtp.host,
-      port: smtp.port,
+      port: parseInt(smtp.port),
       secure: false, // true for 465, false for other ports
       auth: {
         user: smtp.username,
         pass: smtp.password
+      },
+      tls: {
+        rejectUnauthorized: false // Only use this in development!
       }
     });
+
+    // Verify SMTP connection
+    await transporter.verify();
+    console.log('SMTP connection verified successfully');
 
     // Get users' emails
     const [users] = await pool.query(
@@ -411,31 +543,50 @@ router.post('/admin/bulk-send', async (req, res) => {
       [userIds]
     );
 
+    console.log(`Found ${users.length} users to send emails to`);
+
     // Send emails
     const results = await Promise.allSettled(
-      users.map(user => 
-        transporter.sendMail({
-          from: `"${smtp.from_name}" <${smtp.from_email}>`,
-          to: user.email,
-          subject: email.subject,
-          html: email.body
-        })
-      )
+      users.map(async user => {
+        console.log(`Sending email to ${user.email}`);
+        try {
+          const result = await transporter.sendMail({
+            from: `"${smtp.from_name}" <${smtp.from_email}>`,
+            to: user.email,
+            subject: email.subject,
+            html: email.body
+          });
+          console.log(`Email sent successfully to ${user.email}:`, result);
+          return result;
+        } catch (error) {
+          console.error(`Failed to send email to ${user.email}:`, error);
+          throw error;
+        }
+      })
     );
 
     // Count successes and failures
     const succeeded = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.filter(r => r.status === 'rejected').length;
 
+    console.log(`Email sending complete: ${succeeded} succeeded, ${failed} failed`);
+
     res.json({
       message: `Sent ${succeeded} emails successfully, ${failed} failed`,
       succeeded,
-      failed
+      failed,
+      details: results.map((result, index) => ({
+        email: users[index].email,
+        status: result.status,
+        error: result.status === 'rejected' ? result.reason : null
+      }))
     });
-
   } catch (error) {
     console.error('Failed to send bulk emails:', error);
-    res.status(500).json({ error: 'Failed to send emails' });
+    res.status(500).json({ 
+      error: 'Failed to send emails',
+      details: error.message
+    });
   }
 });
 
