@@ -401,13 +401,19 @@ router.get('/admin/users', async (req, res) => {
       hasCustomDomain
     } = req.query;
 
+    // Validate sortBy to prevent SQL injection - remove last_activity_at
+    const allowedSortFields = ['created_at', 'last_login', 'email_count', 'received_email_count', 'custom_domain_count'];
+    const validSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'created_at';
+    
+    // Validate sortOrder
+    const validSortOrder = sortOrder === 'asc' ? 'ASC' : 'DESC';
+
     let query = `
       SELECT 
         u.id,
         u.email,
         u.created_at,
         u.last_login,
-        u.last_activity_at,
         COUNT(DISTINCT te.id) as email_count,
         COUNT(DISTINCT cd.id) as custom_domain_count,
         (
@@ -430,14 +436,14 @@ router.get('/admin/users', async (req, res) => {
       queryParams.push(`%${search}%`);
     }
 
-    if (emailCountMin) {
+    if (emailCountMin !== undefined && emailCountMin !== '') {
       query += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) >= ?`;
-      queryParams.push(parseInt(emailCountMin));
+      queryParams.push(parseInt(emailCountMin) || 0);
     }
 
-    if (emailCountMax) {
+    if (emailCountMax !== undefined && emailCountMax !== '') {
       query += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) <= ?`;
-      queryParams.push(parseInt(emailCountMax));
+      queryParams.push(parseInt(emailCountMax) || 0);
     }
 
     if (dateStart) {
@@ -450,10 +456,11 @@ router.get('/admin/users', async (req, res) => {
       queryParams.push(dateEnd);
     }
 
+    // Fix activity checks to use last_login instead of last_activity_at
     if (isActive === 'true') {
-      query += ` AND u.last_activity_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+      query += ` AND u.last_login >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
     } else if (isActive === 'false') {
-      query += ` AND (u.last_activity_at IS NULL OR u.last_activity_at < DATE_SUB(NOW(), INTERVAL 7 DAY))`;
+      query += ` AND (u.last_login IS NULL OR u.last_login < DATE_SUB(NOW(), INTERVAL 7 DAY))`;
     }
 
     if (hasCustomDomain === 'true') {
@@ -465,52 +472,79 @@ router.get('/admin/users', async (req, res) => {
     // Group by user
     query += ` GROUP BY u.id`;
 
-    // Apply sorting
-    query += ` ORDER BY ${sortBy} ${sortOrder.toUpperCase()}`;
+    // Get total count for pagination - separate query for better reliability
+    const countQuery = `
+      SELECT COUNT(DISTINCT u.id) as total
+      FROM users u
+      LEFT JOIN temp_emails te ON u.id = te.user_id
+      LEFT JOIN user_domains cd ON u.id = cd.user_id
+      WHERE 1=1
+    `;
+    
+    // Copy filters to count query
+    let countQueryComplete = countQuery;
+    const countParams = [...queryParams]; // Clone the params array
+    
+    if (search) countQueryComplete += ` AND u.email LIKE ?`;
+    if (emailCountMin !== undefined && emailCountMin !== '') countQueryComplete += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) >= ?`;
+    if (emailCountMax !== undefined && emailCountMax !== '') countQueryComplete += ` AND (SELECT COUNT(*) FROM temp_emails WHERE user_id = u.id) <= ?`;
+    if (dateStart) countQueryComplete += ` AND u.created_at >= ?`;
+    if (dateEnd) countQueryComplete += ` AND u.created_at <= ?`;
+    
+    // Fix activity checks in count query to use last_login
+    if (isActive === 'true') countQueryComplete += ` AND u.last_login >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    else if (isActive === 'false') countQueryComplete += ` AND (u.last_login IS NULL OR u.last_login < DATE_SUB(NOW(), INTERVAL 7 DAY))`;
+    
+    if (hasCustomDomain === 'true') countQueryComplete += ` AND EXISTS (SELECT 1 FROM user_domains WHERE user_id = u.id)`;
+    else if (hasCustomDomain === 'false') countQueryComplete += ` AND NOT EXISTS (SELECT 1 FROM user_domains WHERE user_id = u.id)`;
+
+    // Apply safe sorting with validated values
+    query += ` ORDER BY ${validSortBy} ${validSortOrder}`;
 
     // Add pagination
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 50;
+    const offset = (pageNum - 1) * limitNum;
     query += ` LIMIT ? OFFSET ?`;
-    queryParams.push(parseInt(limit), offset);
+    queryParams.push(limitNum, offset);
 
-    // Get total count for pagination
-    const countQuery = query.replace(/SELECT .* FROM/, 'SELECT COUNT(DISTINCT u.id) as total FROM');
-    const [countResult] = await pool.query(countQuery, queryParams);
-    const total = countResult[0].total;
+    // Execute count query first
+    const [countResult] = await pool.query(countQueryComplete, countParams);
+    const total = countResult[0]?.total || 0;
 
     // Execute main query
     const [users] = await pool.query(query, queryParams);
 
     res.json({
-      data: users,
+      data: users || [],
       metadata: {
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit))
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
     console.error('Failed to fetch users:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    res.status(500).json({ error: 'Failed to fetch users', details: error.message });
   }
 });
 
 // Admin route to send bulk emails (updated with detailed implementation)
 router.post('/admin/bulk-send', async (req, res) => {
-  // Check admin passphrase
-  const adminAccess = req.headers['admin-access'];
-  if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
-    return res.status(403).json({ error: 'Unauthorized' });
-  }
-
-  const { userIds, email, smtp } = req.body;
-
-  if (!userIds?.length || !email?.subject || !email?.body || !smtp) {
-    return res.status(400).json({ error: 'Missing required parameters' });
-  }
-
   try {
+    // Check admin passphrase
+    const adminAccess = req.headers['admin-access'];
+    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { userIds, email, smtp } = req.body;
+
+    if (!userIds?.length || !email?.subject || !email?.body || !smtp) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
     console.log('Creating transporter with SMTP settings:', {
       host: smtp.host,
       port: smtp.port,
@@ -522,7 +556,7 @@ router.post('/admin/bulk-send', async (req, res) => {
     // Create transporter with provided SMTP settings
     const transporter = nodemailer.createTransport({
       host: smtp.host,
-      port: parseInt(smtp.port),
+      port: parseInt(smtp.port) || 587,
       secure: false, // true for 465, false for other ports
       auth: {
         user: smtp.username,
@@ -537,11 +571,18 @@ router.post('/admin/bulk-send', async (req, res) => {
     await transporter.verify();
     console.log('SMTP connection verified successfully');
 
+    // Fix for the IN clause with array parameter
+    let query = 'SELECT email FROM users WHERE id IN (?)';
+    let params = [userIds];
+    
+    // For MySQL, if we have multiple IDs, we need to use a different approach
+    if (userIds.length > 1) {
+      query = `SELECT email FROM users WHERE id IN (${userIds.map(() => '?').join(',')})`;
+      params = userIds;
+    }
+
     // Get users' emails
-    const [users] = await pool.query(
-      'SELECT email FROM users WHERE id IN (?)',
-      [userIds]
-    );
+    const [users] = await pool.query(query, params);
 
     console.log(`Found ${users.length} users to send emails to`);
 
@@ -556,7 +597,7 @@ router.post('/admin/bulk-send', async (req, res) => {
             subject: email.subject,
             html: email.body
           });
-          console.log(`Email sent successfully to ${user.email}:`, result);
+          console.log(`Email sent successfully to ${user.email}`);
           return result;
         } catch (error) {
           console.error(`Failed to send email to ${user.email}:`, error);
@@ -578,14 +619,14 @@ router.post('/admin/bulk-send', async (req, res) => {
       details: results.map((result, index) => ({
         email: users[index].email,
         status: result.status,
-        error: result.status === 'rejected' ? result.reason : null
+        error: result.status === 'rejected' ? result.reason?.message || 'Unknown error' : null
       }))
     });
   } catch (error) {
     console.error('Failed to send bulk emails:', error);
     res.status(500).json({ 
       error: 'Failed to send emails',
-      details: error.message
+      details: error.message || 'Unknown error'
     });
   }
 });
