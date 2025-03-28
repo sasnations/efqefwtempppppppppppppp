@@ -631,6 +631,94 @@ router.post('/admin/bulk-send', async (req, res) => {
   }
 });
 
+// Admin route to send bulk emails to external recipients
+router.post('/admin/bulk-send-external', async (req, res) => {
+  try {
+    // Check admin passphrase
+    const adminAccess = req.headers['admin-access'];
+    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { emails, email, smtp } = req.body;
+
+    if (!emails?.length || !email?.subject || !email?.body || !smtp) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    console.log('Creating transporter with SMTP settings:', {
+      host: smtp.host,
+      port: smtp.port,
+      auth: {
+        user: smtp.username
+      }
+    });
+
+    // Create transporter with provided SMTP settings
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: parseInt(smtp.port) || 587,
+      secure: false, // true for 465, false for other ports
+      auth: {
+        user: smtp.username,
+        pass: smtp.password
+      },
+      tls: {
+        rejectUnauthorized: false // Only use this in development!
+      }
+    });
+
+    // Verify SMTP connection
+    await transporter.verify();
+    console.log('SMTP connection verified successfully');
+
+    console.log(`Sending emails to ${emails.length} external recipients`);
+
+    // Send emails
+    const results = await Promise.allSettled(
+      emails.map(async (recipientEmail) => {
+        console.log(`Sending email to ${recipientEmail}`);
+        try {
+          const result = await transporter.sendMail({
+            from: `"${smtp.from_name}" <${smtp.from_email}>`,
+            to: recipientEmail,
+            subject: email.subject,
+            html: email.body
+          });
+          console.log(`Email sent successfully to ${recipientEmail}`);
+          return result;
+        } catch (error) {
+          console.error(`Failed to send email to ${recipientEmail}:`, error);
+          throw error;
+        }
+      })
+    );
+
+    // Count successes and failures
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+
+    console.log(`Email sending complete: ${succeeded} succeeded, ${failed} failed`);
+
+    res.json({
+      message: `Sent ${succeeded} emails successfully, ${failed} failed`,
+      succeeded,
+      failed,
+      details: results.map((result, index) => ({
+        email: emails[index],
+        status: result.status,
+        error: result.status === 'rejected' ? result.reason?.message || 'Unknown error' : null
+      }))
+    });
+  } catch (error) {
+    console.error('Failed to send bulk emails to external recipients:', error);
+    res.status(500).json({ 
+      error: 'Failed to send emails',
+      details: error.message || 'Unknown error'
+    });
+  }
+});
+
 // Compress responses
 router.use(compression());
 
