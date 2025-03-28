@@ -539,7 +539,7 @@ router.post('/admin/bulk-send', async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    const { userIds, email, smtp } = req.body;
+    const { userIds, email, smtp, throttleDelay = 300 } = req.body;
 
     if (!userIds?.length || !email?.subject || !email?.body || !smtp) {
       return res.status(400).json({ error: 'Missing required parameters' });
@@ -552,6 +552,8 @@ router.post('/admin/bulk-send', async (req, res) => {
         user: smtp.username
       }
     });
+    
+    console.log(`Using throttle delay of ${throttleDelay}ms between emails`);
 
     // Create transporter with provided SMTP settings
     const transporter = nodemailer.createTransport({
@@ -586,29 +588,34 @@ router.post('/admin/bulk-send', async (req, res) => {
 
     console.log(`Found ${users.length} users to send emails to`);
 
-    // Send emails
-    const results = await Promise.allSettled(
-      users.map(async user => {
+    // Modified: Send emails one by one with delay instead of Promise.allSettled
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+    
+    for (const user of users) {
+      try {
         console.log(`Sending email to ${user.email}`);
-        try {
-          const result = await transporter.sendMail({
-            from: `"${smtp.from_name}" <${smtp.from_email}>`,
-            to: user.email,
-            subject: email.subject,
-            html: email.body
-          });
-          console.log(`Email sent successfully to ${user.email}`);
-          return result;
-        } catch (error) {
-          console.error(`Failed to send email to ${user.email}:`, error);
-          throw error;
+        const result = await transporter.sendMail({
+          from: `"${smtp.from_name}" <${smtp.from_email}>`,
+          to: user.email,
+          subject: email.subject,
+          html: email.body
+        });
+        console.log(`Email sent successfully to ${user.email}`);
+        results.push({ status: 'fulfilled', value: result, email: user.email });
+        succeeded++;
+        
+        // Apply throttling delay between sends (skip delay for the last email)
+        if (users.indexOf(user) < users.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, throttleDelay));
         }
-      })
-    );
-
-    // Count successes and failures
-    const succeeded = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
+      } catch (error) {
+        console.error(`Failed to send email to ${user.email}:`, error);
+        results.push({ status: 'rejected', reason: error, email: user.email });
+        failed++;
+      }
+    }
 
     console.log(`Email sending complete: ${succeeded} succeeded, ${failed} failed`);
 
@@ -616,8 +623,8 @@ router.post('/admin/bulk-send', async (req, res) => {
       message: `Sent ${succeeded} emails successfully, ${failed} failed`,
       succeeded,
       failed,
-      details: results.map((result, index) => ({
-        email: users[index].email,
+      details: results.map((result) => ({
+        email: result.email,
         status: result.status,
         error: result.status === 'rejected' ? result.reason?.message || 'Unknown error' : null
       }))
@@ -640,7 +647,7 @@ router.post('/admin/bulk-send-external', async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    const { emails, email, smtp } = req.body;
+    const { emails, email, smtp, throttleDelay = 300 } = req.body;
 
     if (!emails?.length || !email?.subject || !email?.body || !smtp) {
       return res.status(400).json({ error: 'Missing required parameters' });
@@ -653,6 +660,8 @@ router.post('/admin/bulk-send-external', async (req, res) => {
         user: smtp.username
       }
     });
+    
+    console.log(`Using throttle delay of ${throttleDelay}ms between emails`);
 
     // Create transporter with provided SMTP settings
     const transporter = nodemailer.createTransport({
@@ -674,29 +683,34 @@ router.post('/admin/bulk-send-external', async (req, res) => {
 
     console.log(`Sending emails to ${emails.length} external recipients`);
 
-    // Send emails
-    const results = await Promise.allSettled(
-      emails.map(async (recipientEmail) => {
+    // Modified: Send emails one by one with delay instead of Promise.allSettled
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+    
+    for (const recipientEmail of emails) {
+      try {
         console.log(`Sending email to ${recipientEmail}`);
-        try {
-          const result = await transporter.sendMail({
-            from: `"${smtp.from_name}" <${smtp.from_email}>`,
-            to: recipientEmail,
-            subject: email.subject,
-            html: email.body
-          });
-          console.log(`Email sent successfully to ${recipientEmail}`);
-          return result;
-        } catch (error) {
-          console.error(`Failed to send email to ${recipientEmail}:`, error);
-          throw error;
+        const result = await transporter.sendMail({
+          from: `"${smtp.from_name}" <${smtp.from_email}>`,
+          to: recipientEmail,
+          subject: email.subject,
+          html: email.body
+        });
+        console.log(`Email sent successfully to ${recipientEmail}`);
+        results.push({ status: 'fulfilled', value: result, email: recipientEmail });
+        succeeded++;
+        
+        // Apply throttling delay between sends (skip delay for the last email)
+        if (emails.indexOf(recipientEmail) < emails.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, throttleDelay));
         }
-      })
-    );
-
-    // Count successes and failures
-    const succeeded = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
+      } catch (error) {
+        console.error(`Failed to send email to ${recipientEmail}:`, error);
+        results.push({ status: 'rejected', reason: error, email: recipientEmail });
+        failed++;
+      }
+    }
 
     console.log(`Email sending complete: ${succeeded} succeeded, ${failed} failed`);
 
@@ -704,8 +718,8 @@ router.post('/admin/bulk-send-external', async (req, res) => {
       message: `Sent ${succeeded} emails successfully, ${failed} failed`,
       succeeded,
       failed,
-      details: results.map((result, index) => ({
-        email: emails[index],
+      details: results.map((result) => ({
+        email: result.email,
         status: result.status,
         error: result.status === 'rejected' ? result.reason?.message || 'Unknown error' : null
       }))
