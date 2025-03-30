@@ -533,4 +533,109 @@ router.post('/unblock-ip', async (req, res) => {
   }
 });
 
+// Lookup IP by email (temp or user email)
+router.get('/lookup-email-ip', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { email } = req.query;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
+
+  try {
+    // Get user's IP history with detailed information
+    const [ipHistory] = await pool.query(`
+      SELECT DISTINCT
+        rl.client_ip,
+        rl.geo_country,
+        rl.geo_city,
+        rl.geo_region,
+        rl.created_at,
+        rl.user_agent,
+        rl.is_suspicious,
+        rl.behavior_score,
+        rl.behavior_flags,
+        ib.behavior_type,
+        ib.severity,
+        ib.details as behavior_details,
+        CASE 
+          WHEN u.email IS NOT NULL THEN 'User Email'
+          WHEN te.email IS NOT NULL THEN 'Temp Email'
+          ELSE 'Unknown'
+        END as email_type
+      FROM request_logs rl
+      LEFT JOIN ip_behaviors ib ON rl.client_ip = ib.ip_address
+      LEFT JOIN users u ON rl.user_id = u.id
+      LEFT JOIN temp_emails te ON rl.user_id = te.user_id
+      WHERE u.email = ? OR te.email = ?
+      ORDER BY rl.created_at DESC
+      LIMIT 100
+    `, [email, email]);
+
+    // Get associated users with same IP
+    const [associatedUsers] = await pool.query(`
+      SELECT DISTINCT
+        u.email as user_email,
+        te.email as temp_email,
+        COUNT(*) as request_count,
+        MAX(rl.created_at) as last_seen
+      FROM request_logs rl
+      LEFT JOIN users u ON rl.user_id = u.id
+      LEFT JOIN temp_emails te ON rl.user_id = te.user_id
+      WHERE rl.client_ip IN (
+        SELECT DISTINCT client_ip 
+        FROM request_logs 
+        WHERE user_id IN (
+          SELECT id FROM users WHERE email = ?
+          UNION
+          SELECT user_id FROM temp_emails WHERE email = ?
+        )
+      )
+      GROUP BY u.email, te.email
+      ORDER BY request_count DESC
+    `, [email, email]);
+
+    // Get IP statistics
+    const [ipStats] = await pool.query(`
+      SELECT 
+        COUNT(DISTINCT client_ip) as unique_ips,
+        COUNT(*) as total_requests,
+        AVG(behavior_score) as avg_behavior_score,
+        SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END) as suspicious_requests,
+        MAX(created_at) as last_activity
+      FROM request_logs rl
+      LEFT JOIN users u ON rl.user_id = u.id
+      LEFT JOIN temp_emails te ON rl.user_id = te.user_id
+      WHERE u.email = ? OR te.email = ?
+    `, [email, email]);
+
+    // Get blocked IPs if any
+    const [blockedIps] = await pool.query(`
+      SELECT bi.*, rl.created_at as last_seen
+      FROM blocked_ips bi
+      JOIN request_logs rl ON bi.ip_address = rl.client_ip
+      WHERE rl.user_id IN (
+        SELECT id FROM users WHERE email = ?
+        UNION
+        SELECT user_id FROM temp_emails WHERE email = ?
+      )
+      ORDER BY bi.blocked_at DESC
+    `, [email, email]);
+
+    res.json({
+      email,
+      stats: ipStats[0],
+      ipHistory,
+      associatedUsers,
+      blockedIps
+    });
+  } catch (error) {
+    console.error('Failed to lookup email IP:', error);
+    res.status(500).json({ error: 'Failed to lookup email IP information' });
+  }
+});
+
 export default router;
