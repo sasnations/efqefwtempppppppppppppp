@@ -733,6 +733,130 @@ router.post('/admin/bulk-send-external', async (req, res) => {
   }
 });
 
+// Admin route for batch processing bulk emails
+router.post('/admin/batch-bulk-send', async (req, res) => {
+  try {
+    // Check admin passphrase
+    const adminAccess = req.headers['admin-access'];
+    if (adminAccess !== process.env.ADMIN_PASSPHRASE) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { 
+      emails, 
+      email, 
+      smtp, 
+      batchSize = 50, 
+      batchDelay = 1000, // Delay between batches in ms
+      throttleDelay = 300 // Delay between individual emails in ms
+    } = req.body;
+
+    if (!emails?.length || !email?.subject || !email?.body || !smtp) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    console.log('Starting batch email processing:', {
+      totalEmails: emails.length,
+      batchSize,
+      batchDelay,
+      throttleDelay
+    });
+
+    // Create transporter with provided SMTP settings
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: parseInt(smtp.port) || 587,
+      secure: false,
+      auth: {
+        user: smtp.username,
+        pass: smtp.password
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    // Verify SMTP connection
+    await transporter.verify();
+    console.log('SMTP connection verified successfully');
+
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+    let currentBatch = 0;
+    const totalBatches = Math.ceil(emails.length / batchSize);
+
+    // Process emails in batches
+    for (let i = 0; i < emails.length; i += batchSize) {
+      currentBatch++;
+      const batch = emails.slice(i, i + batchSize);
+      console.log(`Processing batch ${currentBatch}/${totalBatches} (${batch.length} emails)`);
+
+      // Process emails within the batch
+      for (const recipientEmail of batch) {
+        try {
+          console.log(`Sending email to ${recipientEmail}`);
+          const result = await transporter.sendMail({
+            from: `"${smtp.from_name}" <${smtp.from_email}>`,
+            to: recipientEmail,
+            subject: email.subject,
+            html: email.body
+          });
+          console.log(`Email sent successfully to ${recipientEmail}`);
+          results.push({ status: 'fulfilled', value: result, email: recipientEmail });
+          succeeded++;
+
+          // Apply throttling delay between individual emails
+          if (batch.indexOf(recipientEmail) < batch.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, throttleDelay));
+          }
+        } catch (error) {
+          console.error(`Failed to send email to ${recipientEmail}:`, error);
+          results.push({ status: 'rejected', reason: error, email: recipientEmail });
+          failed++;
+        }
+      }
+
+      // Apply delay between batches (skip for the last batch)
+      if (currentBatch < totalBatches) {
+        console.log(`Waiting ${batchDelay}ms before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
+      }
+    }
+
+    console.log(`Batch email processing complete: ${succeeded} succeeded, ${failed} failed`);
+
+    // Generate detailed report
+    const report = {
+      totalEmails: emails.length,
+      totalBatches,
+      batchSize,
+      batchDelay,
+      throttleDelay,
+      succeeded,
+      failed,
+      startTime: new Date().toISOString(),
+      endTime: new Date().toISOString(),
+      details: results.map((result) => ({
+        email: result.email,
+        status: result.status,
+        error: result.status === 'rejected' ? result.reason?.message || 'Unknown error' : null
+      }))
+    };
+
+    res.json({
+      message: `Batch processing complete: ${succeeded} succeeded, ${failed} failed`,
+      ...report
+    });
+  } catch (error) {
+    console.error('Failed to process batch emails:', error);
+    res.status(500).json({ 
+      error: 'Failed to process batch emails',
+      details: error.message || 'Unknown error'
+    });
+  }
+});
+
 // Compress responses
 router.use(compression());
 
