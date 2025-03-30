@@ -558,6 +558,7 @@ router.get('/lookup-email-ip', async (req, res) => {
     }
 
     const userIds = userResult.map(row => row.id);
+    const placeholders = userIds.map(() => '?').join(',');
 
     // Get user's IP history with detailed information
     const [ipHistory] = await pool.query(`
@@ -583,10 +584,10 @@ router.get('/lookup-email-ip', async (req, res) => {
       LEFT JOIN ip_behaviors ib ON rl.client_ip = ib.ip_address
       LEFT JOIN users u ON rl.user_id = u.id
       LEFT JOIN temp_emails te ON rl.user_id = te.user_id
-      WHERE rl.user_id IN (?)
+      WHERE rl.user_id IN (${placeholders})
       ORDER BY rl.created_at DESC
       LIMIT 100
-    `, [userIds]);
+    `, userIds);
 
     // Get associated users with same IP
     const [associatedUsers] = await pool.query(`
@@ -601,11 +602,11 @@ router.get('/lookup-email-ip', async (req, res) => {
       WHERE rl.client_ip IN (
         SELECT DISTINCT client_ip 
         FROM request_logs 
-        WHERE user_id IN (?)
+        WHERE user_id IN (${placeholders})
       )
       GROUP BY u.email, te.email
       ORDER BY request_count DESC
-    `, [userIds]);
+    `, userIds);
 
     // Get IP statistics
     const [ipStats] = await pool.query(`
@@ -616,17 +617,17 @@ router.get('/lookup-email-ip', async (req, res) => {
         SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END) as suspicious_requests,
         MAX(created_at) as last_activity
       FROM request_logs rl
-      WHERE rl.user_id IN (?)
-    `, [userIds]);
+      WHERE rl.user_id IN (${placeholders})
+    `, userIds);
 
     // Get blocked IPs if any
     const [blockedIps] = await pool.query(`
       SELECT bi.*, rl.created_at as last_seen
       FROM blocked_ips bi
       JOIN request_logs rl ON bi.ip_address = rl.client_ip
-      WHERE rl.user_id IN (?)
+      WHERE rl.user_id IN (${placeholders})
       ORDER BY bi.blocked_at DESC
-    `, [userIds]);
+    `, userIds);
 
     res.json({
       email,
@@ -637,7 +638,16 @@ router.get('/lookup-email-ip', async (req, res) => {
     });
   } catch (error) {
     console.error('Failed to lookup email IP:', error);
-    res.status(500).json({ error: 'Failed to lookup email IP information' });
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage
+    });
+    res.status(500).json({ 
+      error: 'Failed to lookup email IP information',
+      details: error.message
+    });
   }
 });
 
