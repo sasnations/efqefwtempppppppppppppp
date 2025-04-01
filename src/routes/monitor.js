@@ -230,6 +230,87 @@ router.get('/lookup-temp-email', async (req, res) => {
   }
 });
 
+// Lookup IP address by temporary email
+router.get('/lookup-temp-email-ip', async (req, res) => {
+  if (!checkAdminPassphrase(req)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { email } = req.query;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    // First get the temp email details
+    const [tempEmailResult] = await connection.query(`
+      SELECT 
+        te.id,
+        te.email as tempEmail,
+        te.created_at,
+        te.expires_at,
+        u.email as ownerEmail
+      FROM temp_emails te
+      LEFT JOIN users u ON te.user_id = u.id
+      WHERE te.email = ?
+    `, [email]);
+
+    if (tempEmailResult.length === 0) {
+      return res.status(404).json({ error: 'Temporary email not found' });
+    }
+
+    // Get the IP address from request logs when the email was created
+    const [ipResult] = await connection.query(`
+      SELECT 
+        rl.client_ip,
+        rl.created_at,
+        rl.user_agent,
+        rl.geo_country,
+        rl.geo_city,
+        rl.geo_region
+      FROM request_logs rl
+      WHERE rl.request_path LIKE '%/create%' 
+      AND rl.created_at BETWEEN DATE_SUB(?, INTERVAL 5 MINUTE) AND DATE_ADD(?, INTERVAL 5 MINUTE)
+      ORDER BY rl.created_at ASC
+      LIMIT 1
+    `, [tempEmailResult[0].created_at, tempEmailResult[0].created_at]);
+
+    // If no IP found in the 10-minute window, try to find any requests related to this email
+    if (ipResult.length === 0) {
+      const [recentIpResult] = await connection.query(`
+        SELECT 
+          rl.client_ip,
+          rl.created_at,
+          rl.user_agent,
+          rl.geo_country,
+          rl.geo_city,
+          rl.geo_region
+        FROM request_logs rl
+        WHERE rl.request_path LIKE ?
+        AND rl.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        ORDER BY rl.created_at DESC
+        LIMIT 1
+      `, [`%${email}%`]);
+
+      if (recentIpResult.length > 0) {
+        ipResult.push(recentIpResult[0]);
+      }
+    }
+
+    res.json({
+      tempEmail: tempEmailResult[0],
+      ipInfo: ipResult.length > 0 ? ipResult[0] : null
+    });
+  } catch (error) {
+    console.error('Failed to lookup temporary email IP:', error);
+    res.status(500).json({ error: 'Failed to lookup temporary email IP' });
+  } finally {
+    connection.release();
+  }
+});
+
 // NEW API ENDPOINTS FOR IP AND REQUEST TRACKING
 
 // Get recent IPs
@@ -533,7 +614,7 @@ router.post('/unblock-ip', async (req, res) => {
   }
 });
 
-// Lookup IP by email (temp or user email)
+// Lookup IP information by email
 router.get('/lookup-email-ip', async (req, res) => {
   if (!checkAdminPassphrase(req)) {
     return res.status(403).json({ error: 'Unauthorized' });
@@ -546,108 +627,34 @@ router.get('/lookup-email-ip', async (req, res) => {
   }
 
   try {
-    // First, find the user_id associated with this email (either from users or temp_emails)
-    const [userResult] = await pool.query(`
-      SELECT id FROM users WHERE email = ?
-      UNION
-      SELECT user_id as id FROM temp_emails WHERE email = ?
-    `, [email, email]);
+    const [result] = await pool.query(`
+      SELECT 
+        eih.email,
+        eih.client_ip,
+        eih.email_type,
+        eih.first_seen,
+        eih.last_seen,
+        eih.request_count,
+        eih.behavior_score,
+        eih.is_suspicious,
+        te.expires_at as email_expires_at,
+        u.email as owner_email
+      FROM email_ip_history eih
+      LEFT JOIN temp_emails te ON eih.email = te.email
+      LEFT JOIN users u ON te.user_id = u.id
+      WHERE eih.email = ?
+      ORDER BY eih.first_seen DESC
+      LIMIT 1
+    `, [email]);
 
-    if (userResult.length === 0) {
-      return res.status(404).json({ error: 'Email not found' });
+    if (result.length === 0) {
+      return res.status(404).json({ error: 'Email not found in IP history' });
     }
 
-    const userIds = userResult.map(row => row.id);
-    const placeholders = userIds.map(() => '?').join(',');
-
-    // Get user's IP history with detailed information
-    const [ipHistory] = await pool.query(`
-      SELECT DISTINCT
-        rl.client_ip,
-        rl.geo_country,
-        rl.geo_city,
-        rl.geo_region,
-        rl.created_at,
-        rl.user_agent,
-        rl.is_suspicious,
-        rl.behavior_score,
-        rl.behavior_flags,
-        ib.behavior_type,
-        ib.severity,
-        ib.details as behavior_details,
-        CASE 
-          WHEN u.email IS NOT NULL THEN 'User Email'
-          WHEN te.email IS NOT NULL THEN 'Temp Email'
-          ELSE 'Unknown'
-        END as email_type
-      FROM request_logs rl
-      LEFT JOIN ip_behaviors ib ON rl.client_ip = ib.ip_address
-      LEFT JOIN users u ON rl.user_id = u.id
-      LEFT JOIN temp_emails te ON rl.user_id = te.user_id
-      WHERE rl.user_id IN (${placeholders})
-      ORDER BY rl.created_at DESC
-      LIMIT 100
-    `, userIds);
-
-    // Get associated users with same IP
-    const [associatedUsers] = await pool.query(`
-      SELECT DISTINCT
-        u.email as user_email,
-        te.email as temp_email,
-        COUNT(*) as request_count,
-        MAX(rl.created_at) as last_seen
-      FROM request_logs rl
-      LEFT JOIN users u ON rl.user_id = u.id
-      LEFT JOIN temp_emails te ON rl.user_id = te.user_id
-      WHERE rl.client_ip IN (
-        SELECT DISTINCT client_ip 
-        FROM request_logs 
-        WHERE user_id IN (${placeholders})
-      )
-      GROUP BY u.email, te.email
-      ORDER BY request_count DESC
-    `, userIds);
-
-    // Get IP statistics
-    const [ipStats] = await pool.query(`
-      SELECT 
-        COUNT(DISTINCT client_ip) as unique_ips,
-        COUNT(*) as total_requests,
-        AVG(behavior_score) as avg_behavior_score,
-        SUM(CASE WHEN is_suspicious = 1 THEN 1 ELSE 0 END) as suspicious_requests,
-        MAX(created_at) as last_activity
-      FROM request_logs rl
-      WHERE rl.user_id IN (${placeholders})
-    `, userIds);
-
-    // Get blocked IPs if any
-    const [blockedIps] = await pool.query(`
-      SELECT bi.*, rl.created_at as last_seen
-      FROM blocked_ips bi
-      JOIN request_logs rl ON bi.ip_address = rl.client_ip
-      WHERE rl.user_id IN (${placeholders})
-      ORDER BY bi.blocked_at DESC
-    `, userIds);
-
-    res.json({
-      email,
-      stats: ipStats[0],
-      ipHistory,
-      associatedUsers,
-      blockedIps
-    });
+    res.json(result[0]);
   } catch (error) {
     console.error('Failed to lookup email IP:', error);
-    console.error('Error details:', {
-      message: error.message,
-      code: error.code,
-      sqlState: error.sqlState,
-      sqlMessage: error.sqlMessage
-    });
-    res.status(500).json({ 
-      error: 'Failed to lookup email IP information',
-      details: error.message
-    });
+    res.status(500).json({ error: 'Failed to lookup email IP' });
   }
 });
 
