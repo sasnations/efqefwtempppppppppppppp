@@ -626,8 +626,23 @@ router.get('/lookup-email-ip', async (req, res) => {
     return res.status(400).json({ error: 'Email parameter is required' });
   }
 
+  const connection = await pool.getConnection();
   try {
-    const [result] = await pool.query(`
+    console.log('Looking up IP for email:', email);
+
+    // First check if email exists in temp_emails
+    const [tempEmailResult] = await connection.query(
+      'SELECT id, email, created_at, expires_at FROM temp_emails WHERE email = ?',
+      [email]
+    );
+
+    if (tempEmailResult.length === 0) {
+      console.log('Email not found in temp_emails:', email);
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    // Then get IP history
+    const [ipHistoryResult] = await connection.query(`
       SELECT 
         eih.email,
         eih.client_ip,
@@ -636,25 +651,47 @@ router.get('/lookup-email-ip', async (req, res) => {
         eih.last_seen,
         eih.request_count,
         eih.behavior_score,
-        eih.is_suspicious,
-        te.expires_at as email_expires_at,
-        u.email as owner_email
+        eih.is_suspicious
       FROM email_ip_history eih
-      LEFT JOIN temp_emails te ON eih.email = te.email
-      LEFT JOIN users u ON te.user_id = u.id
       WHERE eih.email = ?
       ORDER BY eih.first_seen DESC
       LIMIT 1
     `, [email]);
 
-    if (result.length === 0) {
-      return res.status(404).json({ error: 'Email not found in IP history' });
+    if (ipHistoryResult.length === 0) {
+      console.log('No IP history found for email:', email);
+      return res.status(404).json({ 
+        error: 'No IP history found',
+        message: 'Email exists but no IP history found'
+      });
     }
 
-    res.json(result[0]);
+    // Get user info if available
+    const [userResult] = await connection.query(`
+      SELECT u.email as owner_email
+      FROM users u
+      JOIN temp_emails te ON u.id = te.user_id
+      WHERE te.email = ?
+    `, [email]);
+
+    const response = {
+      ...ipHistoryResult[0],
+      email_expires_at: tempEmailResult[0].expires_at,
+      owner_email: userResult.length > 0 ? userResult[0].owner_email : null
+    };
+
+    console.log('Found IP info:', response);
+    res.json(response);
+
   } catch (error) {
     console.error('Failed to lookup email IP:', error);
-    res.status(500).json({ error: 'Failed to lookup email IP' });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to lookup email IP',
+      details: error.message
+    });
+  } finally {
+    connection.release();
   }
 });
 
